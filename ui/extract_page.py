@@ -62,13 +62,13 @@ class CapsWorker(QThread):
         try:
             self.ready.emit(office.capabilities())
         except Exception:
-            self.ready.emit({"word": False, "excel": False, "soffice": False})
+            self.ready.emit({"word": False, "excel": False, "ppt": False, "soffice": False})
 
 
 # --------------------------------------------------------------------------- 工具页
 
 class ExtractPage(QWidget):
-    """从 PDF / Word 抽取指定页，从 Excel 抽取指定工作表，一键存为图片或文件。"""
+    """从 PDF / Word / PPT 抽取指定页，从 Excel 抽取指定工作表，一键存为图片或文件。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -117,7 +117,7 @@ class ExtractPage(QWidget):
         title_box.setSpacing(2)
         t = QLabel("页面提取")
         t.setObjectName("Title")
-        sub = QLabel("从 PDF / Word 抽取指定页，从 Excel 抽取指定工作表，一键存为图片或文件")
+        sub = QLabel("从 PDF / Word / PPT 抽取指定页，从 Excel 抽取指定工作表，一键存为图片或文件")
         sub.setObjectName("Subtitle")
         title_box.addWidget(t)
         title_box.addWidget(sub)
@@ -224,7 +224,8 @@ class ExtractPage(QWidget):
         rv.addWidget(self._tag("输出格式"))
         self.fmt_box = QComboBox()
         for label, value in (("图片 · PNG", "png"), ("图片 · JPG", "jpg"),
-                             ("PDF 文件", "pdf"), ("Word 文档", "docx"), ("Excel 工作簿", "xlsx")):
+                             ("PDF 文件", "pdf"), ("Word 文档", "docx"),
+                             ("Excel 工作簿", "xlsx"), ("PowerPoint 演示文稿", "pptx")):
             self.fmt_box.addItem(label, value)
         self.fmt_box.currentIndexChanged.connect(self._sync_option_state)
         rv.addWidget(self.fmt_box)
@@ -301,7 +302,7 @@ class ExtractPage(QWidget):
         bv.setContentsMargins(12, 10, 12, 10)
         bv.setSpacing(6)
         prow = QHBoxLayout()
-        self.status_label = QLabel("就绪：把 PDF / Word / Excel 拖到窗口任意位置，或点左侧「＋ 添加文件」")
+        self.status_label = QLabel("就绪：把 PDF / Word / PPT / Excel 拖到窗口任意位置，或点左侧「＋ 添加文件」")
         self.status_label.setObjectName("Muted")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -391,7 +392,8 @@ class ExtractPage(QWidget):
     def _pick_files(self) -> None:
         pattern = " ".join(f"*{ext}" for ext in SUPPORTED_EXTS)
         files, _ = QFileDialog.getOpenFileNames(
-            self, "选择 PDF / Word / Excel 文件", str(Path.home()), f"可提取文件 ({pattern});;所有文件 (*.*)"
+            self, "选择 PDF / Word / PPT / Excel 文件", str(Path.home()),
+            f"可提取文件 ({pattern});;所有文件 (*.*)"
         )
         if files:
             self.add_paths(files)
@@ -404,7 +406,7 @@ class ExtractPage(QWidget):
             str(p) for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_EXTS
         )
         if not found:
-            QMessageBox.information(self, "提示", "这个文件夹里没有 PDF / Word / Excel 文件。")
+            QMessageBox.information(self, "提示", "这个文件夹里没有 PDF / Word / PPT / Excel 文件。")
             return
         self.add_paths(found)
 
@@ -443,7 +445,8 @@ class ExtractPage(QWidget):
         elif entry.error:
             meta = f"{entry.kind_label} · 打开失败"
         else:
-            unit = "页" if entry.kind in ("pdf", "word") else "张表"
+            # Excel 的单位是工作表，其它三种都是"页"
+            unit = "张表" if entry.kind == "excel" else "页"
             meta = f"{entry.kind_label} · 共 {len(entry.units)} {unit} · 已选 {len(entry.checked)}"
         return f"{entry.name}\n{meta}"
 
@@ -493,10 +496,13 @@ class ExtractPage(QWidget):
     def _on_caps(self, caps: dict) -> None:
         word = "Word ✓" if caps.get("word") else "Word ✗"
         excel = "Excel ✓" if caps.get("excel") else "Excel ✗"
+        ppt = "PPT ✓" if caps.get("ppt") else "PPT ✗"
         extra = " · LibreOffice ✓" if caps.get("soffice") else ""
-        self.caps_label.setText(f"转换引擎：{word} · {excel}{extra}")
+        self.caps_label.setText(f"转换引擎：{word} · {excel} · {ppt}{extra}")
         if not caps.get("word"):
             self._log("未检测到 Microsoft Word：Word 文件无法确定页码，请安装 Office 或 LibreOffice")
+        if not caps.get("ppt"):
+            self._log("未检测到 Microsoft PowerPoint：PPT 文件无法解析幻灯片，请安装 Office 或 LibreOffice")
 
     # ------------------------------------------------------------------ 选择与预览
     def _on_file_selected(self, row: int) -> None:
@@ -611,6 +617,9 @@ class ExtractPage(QWidget):
             return
         if spec.fmt == "xlsx" and not any(getattr(j.source, "kind", "") == "excel" for j in jobs):
             QMessageBox.warning(self, "格式不匹配", "Excel 工作簿格式只能导出工作表，请改选 PDF / 图片 / Word。")
+            return
+        if spec.fmt == "pptx" and not any(getattr(j.source, "kind", "") == "ppt" for j in jobs):
+            QMessageBox.warning(self, "格式不匹配", "PowerPoint 演示文稿格式只能导出 PPT 幻灯片，请改选 PDF / 图片 / Word。")
             return
         if not spec.out_dir.exists():
             try:
@@ -737,7 +746,7 @@ class ExtractPage(QWidget):
         if files:
             self.add_paths(files)
         else:
-            self.notify("拖入的文件类型不支持：只认 PDF / Word / Excel")
+            self.notify("拖入的文件类型不支持：只认 PDF / Word / PPT / Excel")
 
     # ------------------------------------------------------------------ 退出清理
     def shutdown(self) -> None:

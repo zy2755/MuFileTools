@@ -1,4 +1,4 @@
-"""生成演示 / 自测用的样例文件：PDF、Word、Excel 各一个。"""
+"""生成演示 / 自测用的样例文件：PDF、Word、Excel、PPT 各一个。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -141,11 +141,64 @@ def make_xlsx(path: Path) -> None:
     wb.save(path)
 
 
+def make_pptx(path: Path, slides: int = 4) -> None:
+    """用本机 PowerPoint 现场生成一份演示文稿。
+
+    没有 PowerPoint（也就没有 PowerPoint 的排版能力）时直接跳过，不影响其它样例。
+    """
+    try:
+        import pythoncom
+        import win32com.client as win32
+    except Exception:
+        print("跳过 PPT 样例：没有 pywin32")
+        return
+
+    pythoncom.CoInitialize()
+    app = None
+    pres = None
+    try:
+        app = win32.DispatchEx("PowerPoint.Application")
+        pres = app.Presentations.Add(0)       # WithWindow=False，不弹窗
+        for i in range(1, slides + 1):
+            layout = 1 if i == 1 else 2       # 1=标题, 2=标题+内容
+            s = pres.Slides.Add(i, layout)
+            if i == 1:
+                s.Shapes(1).TextFrame.TextRange.Text = "小睦文件转换器 · PPT 样例"
+                s.Shapes(2).TextFrame.TextRange.Text = (
+                    "用于验证按幻灯片提取、渲染清晰度与导出格式"
+                )
+            else:
+                s.Shapes(1).TextFrame.TextRange.Text = f"第 {i} 页：季度经营摘要"
+                body = (
+                    f"这是 PPT 样例的第 {i} 页。\n"
+                    "· PPT 自身不能直接渲染，先由 PowerPoint 另存为 PDF 再取页；\n"
+                    "· 因此导出的图片与 PowerPoint 里看到的完全一致；\n"
+                    "· 勾选多页并选「PowerPoint 演示文稿」，可另存出一个子集 pptx。"
+                )
+                s.Shapes(2).TextFrame.TextRange.Text = body
+        pres.SaveAs(str(path), 24)            # 24 = ppSaveAsOpenXMLPresentation
+    except Exception as exc:  # noqa: BLE001
+        print(f"跳过 PPT 样例：{exc}")
+    finally:
+        if pres is not None:
+            try:
+                pres.Close()
+            except Exception:
+                pass
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:
+                pass
+        pythoncom.CoUninitialize()
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     make_pdf(OUT / "样例报告.pdf")
     make_docx(OUT / "样例方案.docx")
     make_xlsx(OUT / "样例数据.xlsx")
+    make_pptx(OUT / "样例演示.pptx")
     for p in sorted(OUT.iterdir()):
         print(f"{p.name:20s} {p.stat().st_size / 1024:8.1f} KB")
 

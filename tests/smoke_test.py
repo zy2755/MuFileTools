@@ -163,6 +163,47 @@ def main() -> int:
         finally:
             doc.close()
 
+    # ---------------------------------------------------------------- PPT
+    ppt_src = open_source(SAMPLES / "样例演示.pptx")
+    print(f"PPT 单位数 = {len(ppt_src.units())}")
+
+    def ppt_thumb() -> str:
+        img = ppt_src.thumbnail("p1", 320)
+        img.save(OUT / "preview_pptx.png")
+        assert img.width > 100, img.size
+        return f"{img.width}x{img.height}"
+
+    def ppt_png() -> str:
+        files = run_jobs([pick(ppt_src, ["p1", "p3"])], spec("png"))
+        assert len(files) == 2, files
+        for f in files:
+            with Image.open(f) as im:
+                assert im.width > 800, (f.name, im.size)
+        return f"{len(files)} 张图 {im.size[0]}x{im.size[1]}"
+
+    def ppt_pdf() -> str:
+        files = run_jobs([pick(ppt_src, ["p2", "p3", "p4"])], spec("pdf"))
+        doc = pymupdf.open(files[0])
+        try:
+            assert doc.page_count == 3, doc.page_count
+            text = doc[0].get_text()
+            assert "季度经营摘要" in text, text[:80]
+            return f"{doc.page_count} 页，首页文字 {len(text)} 字符"
+        finally:
+            doc.close()
+
+    def ppt_pptx() -> str:
+        import zipfile
+
+        files = run_jobs([pick(ppt_src, ["p1", "p4"])], spec("pptx"))
+        with zipfile.ZipFile(files[0]) as z:
+            n = len([
+                x for x in z.namelist()
+                if x.startswith("ppt/slides/slide") and x.endswith(".xml")
+            ])
+        assert n == 2, f"子集里应有 2 页，实际 {n}"
+        return f"{n} 页幻灯片 {files[0].stat().st_size // 1024} KB"
+
     check("PDF  缩略图", pdf_thumb)
     check("PDF  → PNG（非连续页 p1/p3/p5）", pdf_png)
     check("PDF  → JPG（三页拼长图）", pdf_jpg_long)
@@ -177,6 +218,10 @@ def main() -> int:
     check("Excel → XLSX（多表合并）", xls_xlsx)
     check("Excel → XLSX（一表一文件）", xls_xlsx_separate)
     check("Excel → PDF", xls_pdf)
+    check("PPT  缩略图（幻灯片渲染）", ppt_thumb)
+    check("PPT  → PNG", ppt_png)
+    check("PPT  → PDF（保留矢量文字）", ppt_pdf)
+    check("PPT  → PPTX（所选幻灯片子集）", ppt_pptx)
 
     print("\n" + "=" * 64)
     ok = sum(1 for r in _results if r[0])

@@ -206,8 +206,15 @@ QListWidget#Files::item {{
     border-radius: 9px;
     padding: 8px 10px;
     margin: 3px 2px;
+    /* 必须显式给颜色：不写的话选中行会去拿调色板的 HighlightedText
+       （深色模式下那是"亮蓝底上的深字"#0f1620），压在 selected_bg 上几乎看不见 */
+    color: {text};
 }}
-QListWidget#Files::item:selected {{ border-color: {accent}; background: {selected_bg}; }}
+QListWidget#Files::item:selected {{
+    border-color: {accent};
+    background: {selected_bg};
+    color: {text};
+}}
 QListWidget#Files::item:hover {{ border-color: {border_strong}; }}
 
 /* ---------- 页面卡片 ---------- */

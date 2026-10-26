@@ -1,4 +1,4 @@
-"""导出器：把选中的单位写成图片 / PDF / Word / Excel。
+"""导出器：把选中的单位写成图片 / PDF / Word / Excel / PPT。
 
 对外只有 run_jobs(jobs, spec, progress) -> [输出文件]
 """
@@ -120,6 +120,22 @@ def run_jobs(jobs: list[Job], spec: ExportSpec, progress=None) -> list[Path]:
                     src.export_workbook([u.key], target)
                     results.append(target)
                     _tick(progress, done, total, f"写出 {target.name}")
+
+        elif fmt == "pptx":
+            # 一件 PPT 出一个新演示文稿（所选幻灯片顺序保持不变），不做"一页一个文件"
+            if kind != "ppt":
+                done += len(job.units)
+                _tick(progress, done, total, f"跳过 {stem}（仅 PPT 支持 pptx 导出）")
+                continue
+            target = _unique(out_dir / f"{spec.prefix}{stem}_提取{spec.suffix}.pptx", spec.overwrite)
+            if target is None:
+                skipped.append(stem)
+                done += len(job.units)
+                continue
+            src.export_presentation(job.keys, target)
+            results.append(target)
+            done += len(job.units)
+            _tick(progress, done, total, f"写出 {target.name}")
         else:
             raise ValueError(f"未知导出格式：{fmt}")
 

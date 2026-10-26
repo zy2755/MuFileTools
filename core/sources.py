@@ -1,4 +1,4 @@
-"""三种来源的统一封装：PDF / Word / Excel。
+"""四种来源的统一封装：PDF / Word / PPT / Excel。
 
 对外只暴露一套接口：
     open()                     解析文件
@@ -7,6 +7,7 @@
     render(key, dpi)           高清渲染 -> [PIL.Image]（工作表可能跨多页）
     export_pdf(keys, out)      原生抽页 / 合并为 PDF
     export_workbook(keys, out) Excel 专用：另存工作簿
+    export_presentation(...)   PPT 专用：另存演示文稿
 """
 from __future__ import annotations
 
@@ -135,6 +136,58 @@ class WordSource:
         self.doc.export_pdf(keys, out_path)
 
 
+class PptSource:
+    """PPT 和 Word 一个路子：先转 PDF 拿到"每页幻灯片"，之后完全复用 PDF 能力。
+
+    额外多一个 export_presentation()，用于把所选幻灯片另存为新的 .pptx。
+    """
+
+    kind: Kind = "ppt"
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._pdf: PdfSource | None = None
+
+    def open(self, progress=None) -> None:
+        if progress:
+            progress("正在用 PowerPoint 解析幻灯片…")
+        self._pdf = PdfSource(office.ppt_to_pdf(self.path))
+        self._pdf.open()
+
+    def close(self) -> None:
+        if self._pdf:
+            self._pdf.close()
+
+    @property
+    def doc(self) -> PdfSource:
+        if self._pdf is None:
+            raise RuntimeError("文档尚未打开。")
+        return self._pdf
+
+    @property
+    def page_count(self) -> int:
+        return self.doc.page_count
+
+    def units(self) -> list[Unit]:
+        out = []
+        for u in self.doc.units():
+            out.append(Unit(key=u.key, label=u.label, meta={**u.meta, "from": "ppt"}))
+        return out
+
+    def thumbnail(self, key: str, width: int = 240) -> Image.Image:
+        return self.doc.thumbnail(key, width)
+
+    def render(self, key: str, dpi: int = 200) -> list[Image.Image]:
+        return self.doc.render(key, dpi)
+
+    def export_pdf(self, keys: list[str], out_path: Path) -> None:
+        self.doc.export_pdf(keys, out_path)
+
+    def export_presentation(self, keys: list[str], out_path: Path) -> None:
+        """把所选幻灯片另存为一个新演示文稿（页键 pN 是 1 起，PowerPoint 也是 1 起）。"""
+        office.ppt_extract_slides(self.path, [_index(k) + 1 for k in keys], out_path)
+
+
 class ExcelSource:
     """Excel 以"工作表"为单位；渲染借 Excel 打印为 PDF 再转图。"""
 
@@ -222,7 +275,7 @@ def open_source(path: str | Path, progress=None):
         raise RuntimeError(f"暂不支持的文件类型：{p.suffix}")
     if not p.exists():
         raise RuntimeError("文件不存在。")
-    cls = {"pdf": PdfSource, "word": WordSource, "excel": ExcelSource}[kind]
+    cls = {"pdf": PdfSource, "word": WordSource, "excel": ExcelSource, "ppt": PptSource}[kind]
     src = cls(p)
     src.open(progress=progress)
     return src

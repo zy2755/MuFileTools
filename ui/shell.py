@@ -209,13 +209,13 @@ class MainWindow(QMainWindow):
 
         if self._on_extract_page():
             if docs:
-                sub = "支持 PDF / Word / Excel，也可以直接拖整个文件夹"
+                sub = "支持 PDF / Word / PPT / Excel，也可以直接拖整个文件夹"
                 if imgs:
                     sub = f"其中 {len(imgs)} 张图片会被忽略（图片请用「图片转 ICO」）"
                 return f"松手即可添加 {len(docs)} 个文件", sub
             if imgs:
                 return "松手就用「图片转 ICO」打开这张图", "图片不能做页面提取，会自动切到图标工具"
-            return "这些文件不支持", "页面提取只认 PDF / Word / Excel"
+            return "这些文件不支持", "页面提取只认 PDF / Word / PPT / Excel"
 
         if imgs:
             title = "松手即可载入这张图片" if len(imgs) == 1 else f"松手载入第 1 张（共 {len(imgs)} 张）"
@@ -234,7 +234,7 @@ class MainWindow(QMainWindow):
                 self.extract_page.add_paths(docs)
                 if imgs:
                     self.extract_page.notify(
-                        f"有 {len(imgs)} 张图片被跳过：页面提取只认 PDF / Word / Excel，"
+                        f"有 {len(imgs)} 张图片被跳过：页面提取只认 PDF / Word / PPT / Excel，"
                         "图片请切到「图片转 ICO」"
                     )
                 return
@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
                         f"一次只能转换一张，已载入 {Path(imgs[0]).name}（另外 {len(imgs) - 1} 张忽略）"
                     )
                 return
-            self.extract_page.notify("拖进来的文件不支持：只认 PDF / Word / Excel，也可以直接拖文件夹")
+            self.extract_page.notify("拖进来的文件不支持：只认 PDF / Word / PPT / Excel，也可以直接拖文件夹")
             return
 
         # 当前在「图片转 ICO」页
@@ -268,8 +268,8 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self, f"关于 {APP_NAME}",
             f"{APP_NAME} (MuFileTools)\n\n"
-            "· 页面提取：PDF / Word 按页提取，Excel 按工作表提取，\n"
-            "  可存为 PNG / JPG / PDF / Word / Excel。\n"
+            "· 页面提取：PDF / Word / PPT 按页提取，Excel 按工作表提取，\n"
+            "  可存为 PNG / JPG / PDF / Word / Excel / PowerPoint。\n"
             "· 图片转 ICO：圆角实时预览，一键导出七档尺寸的 .ico 图标。\n\n"
             "渲染引擎：PyMuPDF + Microsoft Office（未安装时降级 LibreOffice / openpyxl）\n"
             "图标引擎：Pillow（逐档缩放 + 抗锯齿圆角）",

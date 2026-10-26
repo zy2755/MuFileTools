@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-Kind = Literal["pdf", "word", "excel"]
+Kind = Literal["pdf", "word", "excel", "ppt"]
 
-KIND_LABEL: dict[str, str] = {"pdf": "PDF", "word": "Word", "excel": "Excel"}
+KIND_LABEL: dict[str, str] = {"pdf": "PDF", "word": "Word", "excel": "Excel", "ppt": "PPT"}
 
 SUPPORTED_EXTS: dict[str, Kind] = {
     ".pdf": "pdf",
@@ -19,12 +19,17 @@ SUPPORTED_EXTS: dict[str, Kind] = {
     ".xlsx": "excel",
     ".xlsm": "excel",
     ".xlsb": "excel",
+    ".ppt": "ppt",
+    ".pptx": "ppt",
+    ".pptm": "ppt",
+    ".pps": "ppt",
+    ".ppsx": "ppt",
 }
 
 
 @dataclass(frozen=True)
 class Unit:
-    """一个可勾选的单位：PDF/Word 的一页，或 Excel 的一张工作表。"""
+    """一个可勾选的单位：PDF/Word/PPT 的一页，或 Excel 的一张工作表。"""
 
     key: str
     label: str
@@ -33,7 +38,7 @@ class Unit:
 
 @dataclass
 class ExportSpec:
-    fmt: str = "png"                 # png | jpg | pdf | docx | xlsx
+    fmt: str = "png"                 # png | jpg | pdf | docx | xlsx | pptx
     out_dir: Path = field(default_factory=lambda: Path.cwd() / "导出")
     dpi: int = 200
     jpg_quality: int = 92

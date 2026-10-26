@@ -146,7 +146,7 @@ class PreviewGrid(QScrollArea):
         self._cols = 0
         self._uid = ""
         self._placeholder: QLabel | None = QLabel(
-            "把 PDF / Word / Excel 拖到窗口任意位置\n或点左侧「＋ 添加文件」，然后在这里勾选要提取的页面"
+            "把 PDF / Word / PPT / Excel 拖到窗口任意位置\n或点左侧「＋ 添加文件」，然后在这里勾选要提取的页面"
         )
         self._placeholder.setObjectName("Placeholder")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -163,7 +163,7 @@ class PreviewGrid(QScrollArea):
         if self._placeholder is not None:
             self._placeholder.setParent(None)
             self._placeholder.deleteLater()
-        self._placeholder = QLabel("把 PDF / Word / Excel 拖到窗口任意位置\n或点左侧「＋ 添加文件」，然后在这里勾选要提取的页面")
+        self._placeholder = QLabel("把 PDF / Word / PPT / Excel 拖到窗口任意位置\n或点左侧「＋ 添加文件」，然后在这里勾选要提取的页面")
         self._placeholder.setObjectName("Placeholder")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._grid.addWidget(self._placeholder, 0, 0)

@@ -14,7 +14,7 @@ from PIL import Image
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 
-from core.models import SUPPORTED_EXTS, Unit
+from core.models import KIND_LABEL, SUPPORTED_EXTS, Unit
 from core.sources import open_source
 
 
@@ -49,7 +49,7 @@ class DocEntry:
 
     @property
     def kind_label(self) -> str:
-        return {"pdf": "PDF", "word": "Word", "excel": "Excel"}.get(self.kind, self.kind)
+        return KIND_LABEL.get(self.kind, self.kind)
 
 
 class Loader(QThread):
