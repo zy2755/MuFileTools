@@ -1,0 +1,15 @@
+# 换行符策略 —— 这个文件很重要，别删
+#
+# 背景：Windows 的 cmd.exe 只认 CRLF 换行。bat 文件如果是纯 LF，
+# cmd 会把多行拼在一起解析，注释（rem）里的中文残片会被当成命令执行，
+# 报出一堆 "xxx 不是内部或外部命令"。
+#
+# 所以：批处理脚本强制 CRLF，其余保持 LF。
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.spec  text eol=lf
