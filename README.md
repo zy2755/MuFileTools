@@ -126,7 +126,20 @@ python tests/gui_smoke.py      # 离屏启动界面，检查信号与状态流�
 
 ## 打包成 exe（可选）
 
-双击 `build_exe.bat`，产物在 `dist\MuFileTools\MuFileTools.exe`。
+双击 `build_exe.bat`，用 `.venv` 按 `MuFileTools.spec` 打包，产物在 `dist\MuFileTools.exe`。
+
+两种模式，按用途选：
+
+| 模式 | 命令 | 产物 | 启动耗时 | 适合 |
+| --- | --- | --- | --- | --- |
+| **单文件** | `build_exe.bat`（即 `MuFileTools.spec`） | `dist\MuFileTools.exe`（约 113 MB） | 约 2.7 s | 发给别人，一个文件搞定 |
+| **文件夹** | `PyInstaller MuFileTools_onedir.spec` | `dist_onedir\MuFileTools\`（约 221 MB） | 约 1.3 s | 自己常用，启动快一倍 |
+
+> 单文件模式每次启动都要把内容解压到临时目录，所以启动慢一些，这是 onefile 的固有代价。
+> 追求启动速度就用文件夹模式，双击里面的 `MuFileTools.exe` 即可（整个文件夹要一起拷，不能只拿 exe）。
+
+两个 spec 都已剔除运行时用不到的 Qt 组件（软件 OpenGL 兜底 `opengl32sw.dll` 19.7 MB、
+Qt 语言包 6.7 MB、TLS 后端、TIFF 格式插件等），详见 spec 内注释。
 
 ## 常见问题
 

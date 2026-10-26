@@ -6,6 +6,8 @@ __pycache__/
 # 运行与打包产物
 build/
 dist/
+build_onedir/
+dist_onedir/
 out/
 out_gui/
 out_smoke/
