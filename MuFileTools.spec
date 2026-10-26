@@ -15,7 +15,12 @@
 
 from PyInstaller.utils.hooks import collect_data_files
 
+# pymupdf 的字体等资源
 datas = collect_data_files('pymupdf')
+# app_icon.ico 必须一起打包：icon= 参数只决定 exe 的「文件图标」，
+# 而运行时窗口/任务栏图标是 ui/shell.py 里读这个文件生成的。
+# 不打包会退回代码画的蓝色占位图，和文件图标对不上。
+datas += [('app_icon.ico', '.')]
 
 # 按文件名剔除（小写比较）
 EXCLUDE_FILES = {

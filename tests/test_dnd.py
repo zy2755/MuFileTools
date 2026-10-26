@@ -97,6 +97,26 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("MuFileTools")
     app.setOrganizationName("MuFileTools")
+
+    # ExtractPage 用 QSettings("MuFileTools", "PageExtract") 存偏好，而这个测试会
+    # 改「输出目录」并在关闭时被写回。这里先快照真实配置，结束时原样还原，
+    # 免得把测试用的假路径留在用户的注册表里（踩过一次）。
+    from PySide6.QtCore import QSettings
+    real = QSettings("MuFileTools", "PageExtract")
+    snapshot = {k: real.value(k) for k in real.allKeys()}
+
+    try:
+        return _run(app)
+    finally:
+        for k in real.allKeys():
+            if k not in snapshot:
+                real.remove(k)
+        for k, v in snapshot.items():
+            real.setValue(k, v)
+        real.sync()
+
+
+def _run(app) -> int:
     theme.apply(app, theme.MODE_DARK)
 
     win = MainWindow()

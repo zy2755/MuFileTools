@@ -13,6 +13,8 @@
 from PyInstaller.utils.hooks import collect_data_files
 
 datas = collect_data_files('pymupdf')
+# 同 onefile 版：app_icon.ico 也要打进包里，否则运行时窗口图标会退回占位图
+datas += [('app_icon.ico', '.')]
 
 EXCLUDE_FILES = {
     'opengl32sw.dll',

@@ -2,6 +2,7 @@
 """小睦文件转换器 · 主窗口壳：顶部切换「页面提取 / 图片转 ICO」两个工具页。"""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -283,11 +284,30 @@ class MainWindow(QMainWindow):
 
 
 def _make_icon() -> QIcon:
-    """优先用项目自带的 app_icon.ico，缺失时用代码画一个兜底图标。"""
+    """优先用项目自带的 app_icon.ico，缺失时用代码画一个兜底图标。
+
+    打包成 exe 后 __file__ 位于解压目录里，所以这里多试几个位置：
+    源码运行、onefile 解压目录（sys._MEIPASS）、exe 同目录、当前工作目录。
+    """
     from pathlib import Path
 
-    ico = Path(__file__).resolve().parents[1] / "app_icon.ico"
-    if ico.exists():
+    candidates = []
+    try:
+        candidates.append(Path(__file__).resolve().parents[1] / "app_icon.ico")
+    except Exception:
+        pass
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "app_icon.ico")
+    try:
+        candidates.append(Path(sys.executable).resolve().parent / "app_icon.ico")
+    except Exception:
+        pass
+    candidates.append(Path.cwd() / "app_icon.ico")
+
+    for ico in candidates:
+        if not ico.exists():
+            continue
         icon = QIcon(str(ico))
         if not icon.isNull():
             return icon
