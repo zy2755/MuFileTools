@@ -1,0 +1,59 @@
+"""核心数据模型：可选单位（页 / 工作表）、导出参数、任务。"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Literal
+
+Kind = Literal["pdf", "word", "excel"]
+
+KIND_LABEL: dict[str, str] = {"pdf": "PDF", "word": "Word", "excel": "Excel"}
+
+SUPPORTED_EXTS: dict[str, Kind] = {
+    ".pdf": "pdf",
+    ".doc": "word",
+    ".docx": "word",
+    ".docm": "word",
+    ".rtf": "word",
+    ".xls": "excel",
+    ".xlsx": "excel",
+    ".xlsm": "excel",
+    ".xlsb": "excel",
+}
+
+
+@dataclass(frozen=True)
+class Unit:
+    """一个可勾选的单位：PDF/Word 的一页，或 Excel 的一张工作表。"""
+
+    key: str
+    label: str
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExportSpec:
+    fmt: str = "png"                 # png | jpg | pdf | docx | xlsx
+    out_dir: Path = field(default_factory=lambda: Path.cwd() / "导出")
+    dpi: int = 200
+    jpg_quality: int = 92
+    long_image: bool = False         # 仅 png/jpg：把所选单位拼成一张长图
+    merge_xlsx: bool = True          # 仅 xlsx：多张工作表合并进一个工作簿
+    overwrite: str = "rename"        # rename | skip | overwrite
+    prefix: str = ""
+    suffix: str = ""
+
+
+@dataclass
+class Job:
+    """一次导出的最小任务：某个文件里被选中的若干单位。"""
+
+    source: Any
+    units: list[Unit]
+
+    @property
+    def keys(self) -> list[str]:
+        return [u.key for u in self.units]
+
+
+ProgressFn = Callable[[int, int, str], None]

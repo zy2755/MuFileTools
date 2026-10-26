@@ -1,0 +1,9 @@
+# 依赖清单
+# 说明：PyMuPDF 2.x 会额外拉取 numpy/networkx/onnxruntime（较重）；
+#       本程序只用渲染与抽页接口，PyMuPDF>=1.24,<2.0 为轻量安装，两者均兼容。
+PyMuPDF>=1.24
+openpyxl>=3.1
+pywin32>=306 ; sys_platform == "win32"
+PySide6-Essentials>=6.6
+python-docx>=1.1
+Pillow>=10.0
