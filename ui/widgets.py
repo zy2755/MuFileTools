@@ -238,7 +238,8 @@ class PreviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(900, 760)
-        self.setStyleSheet("background:#f2f5fa;")
+        # 背景交给全局 QSS 的 QDialog 规则，别在这里写死颜色，
+        # 否则切到深色主题时这个窗口会孤零零一块白
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 12)

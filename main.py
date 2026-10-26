@@ -17,8 +17,9 @@ from PySide6.QtGui import QFont  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from core import office  # noqa: E402
+from ui import settings  # noqa: E402
+from ui import theme as theme_mod  # noqa: E402
 from ui.shell import APP_NAME, MainWindow, _make_icon  # noqa: E402
-from ui.theme import QSS  # noqa: E402
 
 
 def main() -> int:
@@ -30,7 +31,10 @@ def main() -> int:
 
     font = QFont("Microsoft YaHei UI", 9)
     app.setFont(font)
-    app.setStyleSheet(QSS)
+
+    # 外观：默认跟随系统深浅色，用户在「视图」菜单里改过就以其选择为准
+    preference = settings.load()
+    theme_mod.apply(app, theme_mod.resolve(preference))
 
     office.cleanup_stale()
 

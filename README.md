@@ -95,7 +95,8 @@ ui/
   ico_page.py           图片转 ICO 工具页（滑杆实时预览、导出）
   state.py              DocEntry 状态、Loader 与 Thumbnailer 后台线程
   widgets.py            单位卡片、缩略图网格、大图预览
-  theme.py              QSS 主题
+  theme.py              浅色 / 深色两套调色板 + QSS 模板 + 标题栏配色
+  settings.py           外观偏好读写（QSettings）
 tools/
   make_samples.py       生成 PDF / Word / Excel 演示文件
   make_exe_icon.py      重新生成 app_icon.ico
@@ -107,6 +108,19 @@ tests/
 docs/
   设计说明.md            需求拆解、技术选型理由、架构、导出矩阵、已知限制
 ```
+
+## 外观（深色模式）
+
+右上角 `☾ 深色` / `☀ 浅色` 一键切换，`Ctrl+Shift+D` 同效；「视图」菜单里还可以选
+**跟随系统外观 / 浅色 / 深色**。
+
+- **默认跟随 Windows 的应用深浅色**（读注册表 `AppsUseLightTheme`），系统切了它也跟着切；
+  一旦你手动点过按钮，就以你的选择为准，不再被系统改回去
+- 选择存在 `QSettings`（注册表 `HKCU\Software\MuFileTools`），关掉重开还记得
+- 深色不只是换个背景色：**菜单栏、弹出菜单、下拉列表、消息框、标题栏**都跟着变。
+  窗口标题栏靠 `DwmSetWindowAttribute` 变成深色，不会留一条白边
+- 配色全部集中在 `ui/theme.py` 的 `_LIGHT` / `_DARK` 两个字典里，QSS 里只写
+  `{token}` 占位符。想调色改字典即可，不用碰样式模板
 
 ## 运行环境
 
