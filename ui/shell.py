@@ -2,6 +2,8 @@
 """小睦文件转换器 · 主窗口壳：顶部切换「页面提取 / 图片转 ICO」两个工具页。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -17,8 +19,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.iconizer import IMAGE_EXTS
+from core.models import SUPPORTED_EXTS
 from ui import settings
 from ui import theme as theme_mod
+from ui.dnd import FileDropRouter, collect_by_ext
 from ui.extract_page import ExtractPage
 from ui.ico_page import IcoPage
 
@@ -41,6 +46,16 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._sync_theme_ui()
+
+        # 拖放统一在应用层接管：拖到窗口任何角落（包括输入框、日志、顶栏）都认
+        self.setAcceptDrops(True)
+        self.drop_router = FileDropRouter(
+            self,
+            hint_provider=self._drop_hint,
+            handler=self.handle_dropped_paths,
+            # 用实际生效的调色板取色，而不是偏好设置——跟随系统时两者可能不同
+            overlay_palette=lambda: theme_mod.palette(theme_mod.applied_mode()),
+        )
 
     # ------------------------------------------------------------------ 界面
     def _build_ui(self) -> None:
@@ -176,6 +191,78 @@ class MainWindow(QMainWindow):
         # 窗口句柄要等 show 之后才有效，标题栏配色放在这里
         theme_mod.apply_titlebar(self, theme_mod.resolve(self._pref) == theme_mod.MODE_DARK)
 
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        router = getattr(self, "drop_router", None)
+        if router is not None:
+            router.sync_geometry()
+
+    # ------------------------------------------------------------- 拖放
+    def _on_extract_page(self) -> bool:
+        return self.stack.currentWidget() is self.extract_page
+
+    def _drop_hint(self, raw_paths: list[str]) -> tuple[str, str]:
+        """悬停提示：松手之前就告诉用户会发生什么。"""
+        docs = collect_by_ext(raw_paths, SUPPORTED_EXTS)
+        imgs = collect_by_ext(raw_paths, IMAGE_EXTS)
+
+        if self._on_extract_page():
+            if docs:
+                sub = "支持 PDF / Word / Excel，也可以直接拖整个文件夹"
+                if imgs:
+                    sub = f"其中 {len(imgs)} 张图片会被忽略（图片请用「图片转 ICO」）"
+                return f"松手即可添加 {len(docs)} 个文件", sub
+            if imgs:
+                return "松手就用「图片转 ICO」打开这张图", "图片不能做页面提取，会自动切到图标工具"
+            return "这些文件不支持", "页面提取只认 PDF / Word / Excel"
+
+        if imgs:
+            title = "松手即可载入这张图片" if len(imgs) == 1 else f"松手载入第 1 张（共 {len(imgs)} 张）"
+            return title, "JPG / PNG / BMP / GIF / WebP / TIFF"
+        if docs:
+            return f"松手切到「页面提取」并添加 {len(docs)} 个文件", "图片转 ICO 只吃图片"
+        return "这些文件不支持", "图片转 ICO 只认图片文件"
+
+    def handle_dropped_paths(self, raw_paths: list[str]) -> None:
+        """松手后按当前页分流。两种文件都拖进来时，先处理本页能用的。"""
+        docs = collect_by_ext(raw_paths, SUPPORTED_EXTS)
+        imgs = collect_by_ext(raw_paths, IMAGE_EXTS)
+
+        if self._on_extract_page():
+            if docs:
+                self.extract_page.add_paths(docs)
+                if imgs:
+                    self.extract_page.notify(
+                        f"有 {len(imgs)} 张图片被跳过：页面提取只认 PDF / Word / Excel，"
+                        "图片请切到「图片转 ICO」"
+                    )
+                return
+            if imgs:
+                self._switch(1)
+                self.ico_page.load_path(imgs[0])
+                if len(imgs) > 1:
+                    self.ico_page.notify(
+                        f"一次只能转换一张，已载入 {Path(imgs[0]).name}（另外 {len(imgs) - 1} 张忽略）"
+                    )
+                return
+            self.extract_page.notify("拖进来的文件不支持：只认 PDF / Word / Excel，也可以直接拖文件夹")
+            return
+
+        # 当前在「图片转 ICO」页
+        if imgs:
+            self.ico_page.load_path(imgs[0])
+            if len(imgs) > 1:
+                self.ico_page.notify(
+                    f"一次只能转换一张，已载入 {Path(imgs[0]).name}（另外 {len(imgs) - 1} 张忽略）"
+                )
+            return
+        if docs:
+            self.extract_page.add_paths(docs)
+            self._switch(0)
+            self.extract_page.notify(f"拖进来的是文档，已切到「页面提取」并添加 {len(docs)} 个文件")
+            return
+        self.ico_page.notify("拖进来的文件不是图片：支持 JPG / PNG / BMP / GIF / WebP / TIFF")
+
     def _about(self) -> None:
         QMessageBox.about(
             self, f"关于 {APP_NAME}",
@@ -188,6 +275,9 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event):  # noqa: N802
+        router = getattr(self, "drop_router", None)
+        if router is not None:
+            router.detach()
         self.extract_page.shutdown()
         super().closeEvent(event)
 

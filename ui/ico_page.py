@@ -100,11 +100,11 @@ class IcoPage(QWidget):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(12, 12, 12, 12)
         lv.setSpacing(8)
-        lsec = QLabel("原图（双击此处也可选择图片）")
+        lsec = QLabel("原图（拖进来或双击此处选择）")
         lsec.setObjectName("Section")
         lv.addWidget(lsec)
         self.src_label = _ClickLabel(self.choose_image, left)
-        self.src_label.setText("双击此处选择图片\n（或点击上方「选择图片…」）")
+        self.src_label.setText("把图片拖到这里\n或双击选择（JPG / PNG / BMP / GIF / WebP）")
         self.src_label.setObjectName("Placeholder")
         self.src_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.src_label.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -184,7 +184,7 @@ class IcoPage(QWidget):
         bv.addWidget(self.btn_export)
         outer.addWidget(bar)
 
-        self.status = QLabel("就绪 — 请先选择一张图片")
+        self.status = QLabel("就绪 — 拖一张图片进来，或点「选择图片…」")
         self.status.setObjectName("Muted")
         outer.addWidget(self.status)
 
@@ -224,20 +224,28 @@ class IcoPage(QWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event):  # noqa: N802
-        for url in event.mimeData().urls():
-            if not url.isLocalFile():
-                continue
-            p = Path(url.toLocalFile())
+        # 拖放统一由 ui/dnd.FileDropRouter 接管，这里只是没有路由时的兜底
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        handler = getattr(self.window(), "handle_dropped_paths", None)
+        if handler is not None:
+            handler(paths)
+            return
+        for raw in paths:
+            p = Path(raw)
             if p.is_file() and p.suffix.lower() in iconizer.IMAGE_EXTS:
                 self.load_path(str(p))
                 return
-        self.status.setText("拖入的文件不是可识别的图片格式")
+        self.notify("拖入的文件不是可识别的图片格式")
+
+    def notify(self, text: str) -> None:
+        """给外部（主窗口的拖放路由）用的提示入口。"""
+        self.status.setText(text)
 
     # ------------------------------------------------------------------ 渲染
     def _refresh(self) -> None:
         if self.original_small is None:
             self.src_label.clear()
-            self.src_label.setText("双击此处选择图片\n（或点击上方「选择图片…」）")
+            self.src_label.setText("把图片拖到这里\n或双击选择（JPG / PNG / BMP / GIF / WebP）")
             self.ico_label.clear()
             self.ico_label.setText("选择图片后\n这里实时预览 ICO 效果")
             for lbl in self.small_labels.values():

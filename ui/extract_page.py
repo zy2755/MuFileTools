@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from core import office
 from core.exporter import run_jobs
 from core.models import SUPPORTED_EXTS, ExportSpec, Job
+from ui.dnd import collect_by_ext
 from ui.state import DocEntry, Loader, Thumbnailer
 from ui.widgets import PreviewDialog, PreviewGrid
 
@@ -164,6 +165,12 @@ class ExtractPage(QWidget):
         add_row.addWidget(b_dir, 1)
         add_row.addWidget(b_del)
         lv.addLayout(add_row)
+
+        drag_hint = QLabel("也可以直接把文件或文件夹拖到窗口任意位置")
+        drag_hint.setObjectName("Hint")
+        drag_hint.setWordWrap(True)
+        drag_hint.setStyleSheet("font-size: 11px;")
+        lv.addWidget(drag_hint)
         left.setMinimumWidth(310)
         left.setMaximumWidth(400)
         splitter.addWidget(left)
@@ -294,7 +301,7 @@ class ExtractPage(QWidget):
         bv.setContentsMargins(12, 10, 12, 10)
         bv.setSpacing(6)
         prow = QHBoxLayout()
-        self.status_label = QLabel("就绪：把 PDF / Word / Excel 拖进窗口即可开始")
+        self.status_label = QLabel("就绪：把 PDF / Word / Excel 拖到窗口任意位置，或点左侧「＋ 添加文件」")
         self.status_label.setObjectName("Muted")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -708,24 +715,29 @@ class ExtractPage(QWidget):
     def _log(self, text: str) -> None:
         self.log.appendPlainText(text)
 
+    def notify(self, text: str) -> None:
+        """给外部（主窗口的拖放路由）用的提示入口：同时写日志和状态栏。"""
+        self._log(text)
+        self.status_label.setText(text)
+
     # ------------------------------------------------------------------ 拖放
+    # 真正的拖放由 ui/dnd.FileDropRouter 在应用层统一接管（拖窗口任意位置都认），
+    # 这两个方法只是兜底：万一没有路由（比如单独测试这个页面）也不至于没反应。
     def dragEnterEvent(self, event):  # noqa: N802
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
 
     def dropEvent(self, event):  # noqa: N802
         paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
-        files: list[str] = []
-        for p in paths:
-            path = Path(p)
-            if path.is_dir():
-                files.extend(str(f) for f in path.rglob("*") if f.is_file() and f.suffix.lower() in SUPPORTED_EXTS)
-            elif path.suffix.lower() in SUPPORTED_EXTS:
-                files.append(str(path))
+        handler = getattr(self.window(), "handle_dropped_paths", None)
+        if handler is not None:
+            handler(paths)
+            return
+        files = collect_by_ext(paths, SUPPORTED_EXTS)
         if files:
             self.add_paths(files)
         else:
-            self._log("拖入的文件类型不支持")
+            self.notify("拖入的文件类型不支持：只认 PDF / Word / Excel")
 
     # ------------------------------------------------------------------ 退出清理
     def shutdown(self) -> None:

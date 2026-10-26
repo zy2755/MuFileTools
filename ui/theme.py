@@ -471,6 +471,23 @@ def apply(app, mode: str) -> None:
     app.setPalette(_build_palette(mode))
 
 
+def applied_mode(app=None) -> str:
+    """按应用当前的 QPalette 判断实际生效的是浅色还是深色。
+
+    为什么不直接读偏好设置：偏好可能是「跟随系统」，也可能被别的代码路径
+    改过样式，两者一旦不一致，自绘控件（例如拖放提示层）就会拿错配色——
+    浅色界面上画出一块深色卡片。以实际调色板为准最稳。
+    """
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QApplication
+
+    app = app if app is not None else QApplication.instance()
+    if app is None:
+        return MODE_LIGHT
+
+    c = app.palette().color(QPalette.ColorRole.Window)
+    return MODE_DARK if (c.red() + c.green() + c.blue()) / 3 < 128 else MODE_LIGHT
+
 def apply_titlebar(window, dark: bool) -> None:
     """让 Windows 标题栏跟着变深 / 变浅（Win10 2004+ 支持）。"""
     if sys.platform != "win32" or window is None:
