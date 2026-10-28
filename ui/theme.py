@@ -217,6 +217,27 @@ QListWidget#Files::item:selected {{
 }}
 QListWidget#Files::item:hover {{ border-color: {border_strong}; }}
 
+/* ---------- 导出顺序条 ---------- */
+QListWidget#Order {{
+    background: transparent;
+    border: none;
+    outline: none;
+}}
+QListWidget#Order::item {{
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: 8px;
+    margin: 2px;
+    padding: 4px;
+    color: {text};
+}}
+QListWidget#Order::item:selected {{
+    border-color: {accent};
+    background: {selected_bg};
+    color: {text};
+}}
+QListWidget#Order::item:hover {{ border-color: {border_strong}; }}
+
 /* ---------- 页面卡片 ---------- */
 QFrame#UnitCard {{
     background: {surface};

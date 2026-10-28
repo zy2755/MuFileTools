@@ -44,6 +44,7 @@ class ExportSpec:
     jpg_quality: int = 92
     long_image: bool = False         # 仅 png/jpg：把所选单位拼成一张长图
     merge_xlsx: bool = True          # 仅 xlsx：多张工作表合并进一个工作簿
+    merge_docx: bool = True          # 仅 docx：跨文件合并成一份文档（且允许调顺序）
     overwrite: str = "rename"        # rename | skip | overwrite
     prefix: str = ""
     suffix: str = ""
@@ -59,6 +60,20 @@ class Job:
     @property
     def keys(self) -> list[str]:
         return [u.key for u in self.units]
+
+
+@dataclass
+class PageRef:
+    """合并导出用的一页：来自哪个文件、第几页。列表顺序 = 输出顺序。"""
+
+    source: Any
+    key: str
+    label: str
+    doc_name: str
+
+    @property
+    def kind(self) -> str:
+        return getattr(self.source, "kind", "")
 
 
 ProgressFn = Callable[[int, int, str], None]

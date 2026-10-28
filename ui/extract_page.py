@@ -6,8 +6,9 @@ import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -28,8 +29,8 @@ from PySide6.QtWidgets import (
 )
 
 from core import office
-from core.exporter import run_jobs
-from core.models import SUPPORTED_EXTS, ExportSpec, Job
+from core.exporter import run_jobs, run_merge
+from core.models import SUPPORTED_EXTS, ExportSpec, Job, PageRef
 from ui.dnd import collect_by_ext
 from ui.state import DocEntry, Loader, Thumbnailer
 from ui.widgets import PreviewDialog, PreviewGrid
@@ -50,6 +51,26 @@ class ExportWorker(QThread):
     def run(self) -> None:  # noqa: D102
         try:
             results = run_jobs(self._jobs, self._spec, progress=lambda d, t, m: self.progress.emit(d, t, m))
+            self.done.emit(results)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
+class MergeWorker(QThread):
+    """合并 Word：页面顺序已经由界面排好，这里只管照单拼装。"""
+
+    progress = Signal(int, int, str)
+    done = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, pages: list[PageRef], spec: ExportSpec, parent=None):
+        super().__init__(parent)
+        self._pages = pages
+        self._spec = spec
+
+    def run(self) -> None:  # noqa: D102
+        try:
+            results = run_merge(self._pages, self._spec, progress=lambda d, t, m: self.progress.emit(d, t, m))
             self.done.emit(results)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -76,8 +97,12 @@ class ExtractPage(QWidget):
 
         self.entries: dict[str, DocEntry] = {}
         self.order: list[str] = []
+        # 导出顺序：(uid, 页键) 的有序列表。网格里勾选只是「选中」，
+        # 这里才是「输出时谁在前面」，合并成一份 Word 时就按这个顺序排版。
+        self.ordered: list[tuple[str, str]] = []
         self.current_uid: str | None = None
-        self._export_worker: ExportWorker | None = None
+        self._export_worker: ExportWorker | MergeWorker | None = None
+        self._caps: dict = {}
 
         self.settings = QSettings("MuFileTools", "PageExtract")
 
@@ -175,10 +200,13 @@ class ExtractPage(QWidget):
         left.setMaximumWidth(400)
         splitter.addWidget(left)
 
-        # 中：预览网格
-        center = QFrame()
-        center.setObjectName("Panel")
-        cv = QVBoxLayout(center)
+        # 中：上面是当前文件的预览网格，下面是「导出顺序」条
+        center = QSplitter(Qt.Orientation.Vertical)
+        center.setChildrenCollapsible(False)
+
+        grid_box = QFrame()
+        grid_box.setObjectName("Panel")
+        cv = QVBoxLayout(grid_box)
         cv.setContentsMargins(0, 12, 0, 4)
         cv.setSpacing(6)
         ch = QHBoxLayout()
@@ -209,6 +237,11 @@ class ExtractPage(QWidget):
         self.grid.opened.connect(self._open_preview)
         self.grid.want_thumb.connect(self._on_want_thumb)
         cv.addWidget(self.grid, 1)
+        center.addWidget(grid_box)
+        center.addWidget(self._build_order_bar())
+        center.setStretchFactor(0, 1)
+        center.setStretchFactor(1, 0)
+        center.setSizes([520, 176])
         splitter.addWidget(center)
 
         # 右：导出设置
@@ -245,8 +278,15 @@ class ExtractPage(QWidget):
 
         self.opt_long = QCheckBox("所选页拼成一张长图")
         self.opt_merge = QCheckBox("多个工作表合并为一个工作簿")
+        self.opt_merge_docx = QCheckBox("多份文档合并为一个 Word")
+        self.opt_merge_docx.setToolTip(
+            "勾上：把下面「导出顺序」里的所有页拼成一份 .docx（顺序可拖拽调整）\n"
+            "不勾：每个文件各出一份，页序按原文档"
+        )
+        self.opt_merge_docx.toggled.connect(lambda _v: self._refresh_counts())
         rv.addWidget(self.opt_long)
         rv.addWidget(self.opt_merge)
+        rv.addWidget(self.opt_merge_docx)
 
         rv.addWidget(self._tag("输出目录"))
         dir_row = QHBoxLayout()
@@ -321,6 +361,55 @@ class ExtractPage(QWidget):
         bv.addWidget(self.log)
         lay.addWidget(bottom)
 
+    def _build_order_bar(self) -> QWidget:
+        """「导出顺序」条：跨文件的已选页按输出先后排一列，可拖拽重排。"""
+        box = QFrame()
+        box.setObjectName("Panel")
+        v = QVBoxLayout(box)
+        v.setContentsMargins(14, 8, 14, 4)
+        v.setSpacing(4)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        lb = QLabel("导出顺序")
+        lb.setObjectName("Section")
+        self.order_count = QLabel("0 页")
+        self.order_count.setObjectName("Muted")
+        hint = QLabel("来回拖动可调换先后；合并成一份 Word 时按这里的顺序排版")
+        hint.setObjectName("Hint")
+        hint.setStyleSheet("font-size: 11px;")
+        b_up = QPushButton("◀ 前移")
+        b_up.setObjectName("Ghost")
+        b_up.clicked.connect(lambda: self._move_order(-1))
+        b_dn = QPushButton("后移 ▶")
+        b_dn.setObjectName("Ghost")
+        b_dn.clicked.connect(lambda: self._move_order(1))
+        row.addWidget(lb)
+        row.addWidget(self.order_count)
+        row.addSpacing(8)
+        row.addWidget(hint, 1)
+        row.addWidget(b_up)
+        row.addWidget(b_dn)
+        v.addLayout(row)
+
+        self.order_list = QListWidget()
+        self.order_list.setObjectName("Order")
+        self.order_list.setViewMode(QListWidget.ViewMode.IconMode)
+        self.order_list.setFlow(QListWidget.Flow.LeftToRight)
+        self.order_list.setWrapping(False)
+        self.order_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.order_list.setMovement(QListWidget.Movement.Snap)
+        self.order_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.order_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.order_list.setIconSize(QSize(40, 52))
+        self.order_list.setGridSize(QSize(88, 92))
+        self.order_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.order_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.order_list.setFixedHeight(98)
+        self.order_list.model().rowsMoved.connect(self._on_order_moved)
+        v.addWidget(self.order_list)
+        return box
+
     @staticmethod
     def _tag(text: str) -> QLabel:
         lb = QLabel(text)
@@ -367,6 +456,7 @@ class ExtractPage(QWidget):
         self.jpg_quality.setValue(int(s.value("jpg_quality", 92)))
         self.opt_long.setChecked(s.value("long_image", "false") in (True, "true"))
         self.opt_merge.setChecked(s.value("merge_xlsx", "true") in (True, "true"))
+        self.opt_merge_docx.setChecked(s.value("merge_docx", "true") in (True, "true"))
         self._sync_option_state()
 
     def _save_settings(self) -> None:
@@ -377,6 +467,7 @@ class ExtractPage(QWidget):
         s.setValue("jpg_quality", self.jpg_quality.value())
         s.setValue("long_image", "true" if self.opt_long.isChecked() else "false")
         s.setValue("merge_xlsx", "true" if self.opt_merge.isChecked() else "false")
+        s.setValue("merge_docx", "true" if self.opt_merge_docx.isChecked() else "false")
         s.setValue("prefix", self.prefix.text())
         s.setValue("suffix", self.suffix.text())
 
@@ -387,6 +478,9 @@ class ExtractPage(QWidget):
         self.jpg_row.setVisible(fmt == "jpg")
         self.opt_long.setVisible(is_img)
         self.opt_merge.setVisible(fmt == "xlsx")
+        self.opt_merge_docx.setVisible(fmt == "docx")
+        if hasattr(self, "summary"):
+            self._refresh_counts()
 
     # ------------------------------------------------------------------ 添加文件
     def _pick_files(self) -> None:
@@ -461,17 +555,110 @@ class ExtractPage(QWidget):
 
     def _refresh_counts(self) -> None:
         total_files = len(self.order)
-        total_units = sum(len(e.checked) for e in self.entries.values())
+        total_units = len(self.ordered)
+        merging = self.fmt_box.currentData() == "docx" and self.opt_merge_docx.isChecked()
         self.queue_count.setText(f"{total_files} 个文件")
-        self.summary.setText(
-            f"已选 {total_files} 个文件中的 {total_units} 个页面/工作表" if total_units else "尚未选择任何页面"
-        )
+        if not total_units:
+            self.summary.setText("尚未选择任何页面")
+        elif merging:
+            self.summary.setText(f"已选 {total_units} 页 → 将按「导出顺序」合并为 1 份 Word 文档")
+        else:
+            self.summary.setText(f"已选 {total_files} 个文件中的 {total_units} 个页面/工作表")
         self.export_btn.setEnabled(total_units > 0 and self._export_worker is None)
         if self.current_uid:
             entry = self.entries.get(self.current_uid)
             if entry and not entry.loading:
                 total = len(entry.units)
                 self.sel_label.setText(f"已选 {len(entry.checked)} / {total}")
+
+    def _refresh_all(self) -> None:
+        """选中状态变了以后统一刷新：计数 + 顺序条。"""
+        self._refresh_counts()
+        self._refresh_order_list()
+
+    # ------------------------------------------------------------------ 导出顺序
+    def _sync_entry_order(self, entry: DocEntry) -> None:
+        """让 ordered 和 entry.checked 对齐：已有的顺序不动，新勾的排到末尾。"""
+        self.ordered = [
+            (u, k) for (u, k) in self.ordered
+            if u != entry.uid
+            or (not entry.loading and not entry.error and k in entry.checked)
+        ]
+        if entry.loading or entry.error:
+            return
+        have = {k for (u, k) in self.ordered if u == entry.uid}
+        for unit in entry.units:
+            if unit.key in entry.checked and unit.key not in have:
+                self.ordered.append((entry.uid, unit.key))
+
+    def _drop_from_order(self, uid: str) -> None:
+        self.ordered = [(u, k) for (u, k) in self.ordered if u != uid]
+
+    def _refresh_order_list(self) -> None:
+        lst = self.order_list
+        lst.blockSignals(True)
+        lst.clear()
+        self.order_count.setText(f"{len(self.ordered)} 页")
+        for i, (uid, key) in enumerate(self.ordered, start=1):
+            entry = self.entries.get(uid)
+            if entry is None:
+                continue
+            unit = next((u for u in entry.units if u.key == key), None)
+            label = unit.label if unit else key
+            item = QListWidgetItem()
+            item.setText(f"{i}. {label}")
+            item.setToolTip(f"输出顺序：第 {i} 页\n{entry.name} · {label}")
+            item.setData(Qt.ItemDataRole.UserRole, [uid, key])
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            pix = entry.thumbs.get(key)
+            if pix is not None:
+                item.setIcon(QIcon(pix))
+            lst.addItem(item)
+        if not self.ordered:
+            ph = QListWidgetItem("还没选页面\n在上面的缩略图上勾选，就会按勾选先后排到这里")
+            ph.setFlags(Qt.ItemFlag.NoItemFlags)
+            ph.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            lst.addItem(ph)
+        lst.blockSignals(False)
+
+    def _on_order_moved(self, *_args) -> None:
+        """拖拽结束：按列表当前顺序重建 ordered（这里不能整体重建列表，会打断拖拽）。"""
+        rebuilt: list[tuple[str, str]] = []
+        for i in range(self.order_list.count()):
+            item = self.order_list.item(i)
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if not data:
+                continue
+            rebuilt.append((data[0], data[1]))
+            entry = self.entries.get(data[0])
+            unit = next((u for u in entry.units if u.key == data[1]), None) if entry else None
+            item.setText(f"{i + 1}. {unit.label if unit else data[1]}")
+            if entry:
+                item.setToolTip(f"输出顺序：第 {i + 1} 页\n{entry.name} · {unit.label if unit else data[1]}")
+        if rebuilt:
+            self.ordered = rebuilt
+            self._refresh_counts()
+
+    def _move_order(self, delta: int) -> None:
+        row = self.order_list.currentRow()
+        target = row + delta
+        if row < 0 or not self.ordered or not (0 <= target < len(self.ordered)):
+            return
+        self.ordered[row], self.ordered[target] = self.ordered[target], self.ordered[row]
+        self._refresh_order_list()
+        self.order_list.setCurrentRow(target)
+
+    def _collect_pages(self) -> list[PageRef]:
+        pages: list[PageRef] = []
+        for uid, key in self.ordered:
+            entry = self.entries.get(uid)
+            if entry is None or entry.source is None:
+                continue
+            unit = next((u for u in entry.units if u.key == key), None)
+            if unit is None:
+                continue
+            pages.append(PageRef(source=entry.source, key=key, label=unit.label, doc_name=entry.name))
+        return pages
 
     # ------------------------------------------------------------------ 载入回调
     def _on_busy(self, entry: DocEntry, msg: str) -> None:
@@ -480,20 +667,24 @@ class ExtractPage(QWidget):
     def _on_loaded(self, entry: DocEntry) -> None:
         self._refresh_queue_item(entry)
         self._log(f"已解析 {entry.name}（{len(entry.units)} 个页面/工作表）")
+        self._sync_entry_order(entry)
         if self.current_uid == entry.uid:
             self._show_entry(entry)
-        self._refresh_counts()
+        self._refresh_all()
         if entry.error is None and len(entry.units) > 40:
             self._log(f"{entry.name} 页面较多，默认不勾选，请用「全选」或逐页选择")
 
     def _on_load_failed(self, entry: DocEntry, msg: str) -> None:
         self._refresh_queue_item(entry)
+        self._drop_from_order(entry.uid)
+        self._refresh_all()
         self._log(f"❌ {entry.name}：{msg}")
         self.status_label.setText(f"{entry.name} 打开失败：{msg}")
         if self.current_uid == entry.uid:
             self._show_entry(entry)
 
     def _on_caps(self, caps: dict) -> None:
+        self._caps = caps
         word = "Word ✓" if caps.get("word") else "Word ✗"
         excel = "Excel ✓" if caps.get("excel") else "Excel ✗"
         ppt = "PPT ✓" if caps.get("ppt") else "PPT ✗"
@@ -535,8 +726,9 @@ class ExtractPage(QWidget):
             entry.checked.add(key)
         else:
             entry.checked.discard(key)
+        self._sync_entry_order(entry)
         self._refresh_queue_item(entry)
-        self._refresh_counts()
+        self._refresh_all()
 
     def _check_all(self, value: bool) -> None:
         entry = self.entries.get(self.current_uid or "")
@@ -544,8 +736,9 @@ class ExtractPage(QWidget):
             return
         entry.checked = {u.key for u in entry.units} if value else set()
         self.grid.sync_checks(entry.checked)
+        self._sync_entry_order(entry)
         self._refresh_queue_item(entry)
-        self._refresh_counts()
+        self._refresh_all()
 
     def _invert(self) -> None:
         entry = self.entries.get(self.current_uid or "")
@@ -554,8 +747,9 @@ class ExtractPage(QWidget):
         all_keys = {u.key for u in entry.units}
         entry.checked = all_keys - entry.checked
         self.grid.sync_checks(entry.checked)
+        self._sync_entry_order(entry)
         self._refresh_queue_item(entry)
-        self._refresh_counts()
+        self._refresh_all()
 
     def _on_want_thumb(self, uid: str, key: str) -> None:
         entry = self.entries.get(uid)
@@ -572,6 +766,16 @@ class ExtractPage(QWidget):
         if entry:
             entry.thumbs[key] = pix
         self.grid.apply_thumb(uid, key, pix)
+        self._update_order_icon(uid, key, pix)
+
+    def _update_order_icon(self, uid: str, key: str, pix) -> None:
+        """缩略图晚到：顺手把顺序条里对应那张的图标补上（不重建列表，免得打断拖拽）。"""
+        for i in range(self.order_list.count()):
+            item = self.order_list.item(i)
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data and data[0] == uid and data[1] == key:
+                item.setIcon(QIcon(pix))
+                return
 
     def _on_thumb_failed(self, uid: str, key: str, msg: str) -> None:
         self.grid.apply_thumb_error(uid, key, msg)
@@ -598,12 +802,12 @@ class ExtractPage(QWidget):
             jpg_quality=self.jpg_quality.value(),
             long_image=self.opt_long.isChecked(),
             merge_xlsx=self.opt_merge.isChecked(),
+            merge_docx=self.opt_merge_docx.isChecked(),
             prefix=self.prefix.text().strip(),
             suffix=self.suffix.text().strip(),
         )
 
-    def _start_export(self) -> None:
-        spec = self._build_spec()
+    def _collect_jobs(self) -> list[Job]:
         jobs: list[Job] = []
         for uid in self.order:
             entry = self.entries[uid]
@@ -612,7 +816,19 @@ class ExtractPage(QWidget):
             units = [u for u in entry.units if u.key in entry.checked]
             if units:
                 jobs.append(Job(source=entry.source, units=units))
-        if not jobs:
+        return jobs
+
+    def _start_export(self) -> None:
+        spec = self._build_spec()
+        # 「Word 文档 + 合并」走另一条路：跨文件、按用户排好的顺序拼成一份
+        merge_mode = spec.fmt == "docx" and spec.merge_docx
+        jobs: list[Job] = []
+        pages: list[PageRef] = []
+        if merge_mode:
+            pages = self._collect_pages()
+        else:
+            jobs = self._collect_jobs()
+        if not jobs and not pages:
             QMessageBox.warning(self, "无法导出", "还没有勾选任何页面或工作表。")
             return
         if spec.fmt == "xlsx" and not any(getattr(j.source, "kind", "") == "excel" for j in jobs):
@@ -632,13 +848,20 @@ class ExtractPage(QWidget):
         self.progress.setValue(0)
         self.export_btn.setEnabled(False)
         self.status_label.setText("正在导出…")
-        self._log(f"开始导出：{spec.fmt.upper()} → {spec.out_dir}")
+        if merge_mode:
+            docs = len({p.doc_name for p in pages})
+            self._log(f"开始合并 {docs} 个文件里的 {len(pages)} 页 → 一份 Word 文档：{spec.out_dir}")
+            if not self._caps.get("word", True):
+                self._log("未检测到 Microsoft Word：合并会退化成「页图排版」，文字不能选中编辑")
+        else:
+            self._log(f"开始导出：{spec.fmt.upper()} → {spec.out_dir}")
 
-        self._export_worker = ExportWorker(jobs, spec, self)
-        self._export_worker.progress.connect(self._on_export_progress)
-        self._export_worker.done.connect(self._on_export_done)
-        self._export_worker.failed.connect(self._on_export_failed)
-        self._export_worker.start()
+        worker = MergeWorker(pages, spec, self) if merge_mode else ExportWorker(jobs, spec, self)
+        worker.progress.connect(self._on_export_progress)
+        worker.done.connect(self._on_export_done)
+        worker.failed.connect(self._on_export_failed)
+        self._export_worker = worker
+        worker.start()
 
     def _on_export_progress(self, done: int, total: int, msg: str) -> None:
         self.progress.setValue(int(done / max(total, 1) * 100))
@@ -696,6 +919,7 @@ class ExtractPage(QWidget):
                 except Exception:
                     pass
             self.order = [u for u in self.order if u != uid]
+        self._drop_from_order(uid)
         self.current_uid = None
         if self.file_list.count():
             self.file_list.setCurrentRow(min(row, self.file_list.count() - 1))
@@ -703,7 +927,7 @@ class ExtractPage(QWidget):
             self.grid.clear()
             self.file_title.setText("未选择文件")
             self.sel_label.setText("")
-        self._refresh_counts()
+        self._refresh_all()
 
     def _clear_all(self) -> None:
         self.file_list.clear()
@@ -715,11 +939,12 @@ class ExtractPage(QWidget):
                     pass
         self.entries.clear()
         self.order.clear()
+        self.ordered.clear()
         self.current_uid = None
         self.grid.clear()
         self.file_title.setText("未选择文件")
         self.sel_label.setText("")
-        self._refresh_counts()
+        self._refresh_all()
 
     def _log(self, text: str) -> None:
         self.log.appendPlainText(text)

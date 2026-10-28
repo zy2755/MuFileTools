@@ -208,6 +208,182 @@ def _word_export(src: Path, out: Path) -> None:
             pythoncom.CoUninitialize()
 
 
+# --------------------------------------------------------------------------- Word 合并
+
+# Word 的常量（动态派发下只能按位置传数值）
+_WD_GOTO_PAGE = 1
+_WD_GOTO_ABSOLUTE = 1
+_WD_STAT_PAGES = 2
+_WD_PAGE_BREAK = 7
+_WD_COLLAPSE_END = 0
+_WD_FORMAT_DOCX = 16
+_WD_BREAK_CHAR = "\x0c"     # 手动分页符在 Range.Text 里的样子
+
+
+def _wd_page_starts(doc) -> list[int]:
+    """每页正文的起始偏移，末尾补一个「全文结束」偏移（长度 = 页数 + 1）。
+
+    注意：GoTo 按页定位**必须有文档窗口**。用 Open(..., Visible=False) 打开的文档
+    没有窗口，GoTo 会让 WINWORD 直接崩掉（报「远程过程调用失败」，进程消失）。
+    所以打开时最后一个参数 Visible 要传 True —— 应用本身仍是隐藏的，不会闪窗。
+    """
+    doc.Repaginate()
+    total = int(doc.ComputeStatistics(_WD_STAT_PAGES))
+    starts = [int(doc.GoTo(_WD_GOTO_PAGE, _WD_GOTO_ABSOLUTE, i).Start) for i in range(1, total + 1)]
+    starts.append(int(doc.Content.End))
+    return starts
+
+
+def _wd_page_span(doc, starts: list[int], page: int) -> tuple[int, int, bool]:
+    """取第 page 页（1 起）的范围，并剥掉结尾自带的分页符。
+
+    返回 (start, end, closed)：closed 表示这段内容结尾已经是一个完整段落。
+    剥不剥很关键 —— 不剥的话每页都会带着原来的分页符，再叠上我们自己插的分页符，
+    一页内容会变成两页（实测 4 页输出成 8 页就是这么来的）。
+    """
+    if not 1 <= page < len(starts):
+        raise ValueError(f"原文只有 {len(starts) - 1} 页，取不到第 {page} 页。")
+    start, end = starts[page - 1], starts[page]
+    text = doc.Range(start, end).Text
+    if text.endswith(_WD_BREAK_CHAR + "\r"):
+        end -= 2
+        closed = text[:-2].endswith("\r")
+    elif text.endswith(_WD_BREAK_CHAR):
+        end -= 1
+        closed = text[:-1].endswith("\r")
+    else:
+        closed = text.endswith("\r")
+    return start, max(start, end), closed
+
+
+def _wd_copy_page_setup(src_doc, dst_doc) -> None:
+    """新文档的纸张/页边距照抄第一个来源，否则 A4 的内容会按 Letter 重新排版。"""
+    try:
+        s, d = src_doc.PageSetup, dst_doc.PageSetup
+    except Exception:
+        return
+    for attr in (
+        "PageWidth", "PageHeight", "TopMargin", "BottomMargin",
+        "LeftMargin", "RightMargin", "Gutter", "Orientation",
+        "HeaderDistance", "FooterDistance",
+    ):
+        try:
+            setattr(d, attr, getattr(s, attr))
+        except Exception:
+            pass
+
+
+def merge_docx(segments, out_path: Path, *, dpi: int = 200, progress=None) -> None:
+    """把若干「页」原生拼成一份新的 .docx。
+
+    segments 按输出顺序排列，每个元素二选一：
+        ("word", Path, page_no)   Word 来源：按页取 Range，文字可选可编辑
+        ("image", Path)           其它来源（PDF/PPT/Excel）：已经渲染好的整页 PNG
+
+    会打开本机 Word（隐藏），同一个会话里把所有源文档打开一次，逐页拼装。
+    页眉页脚不在 Range 里，合并后统一用新文档的（一般就是没有）—— 这点在界面上说明了。
+    """
+    import pythoncom
+    import win32com.client as win32
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+
+    with _COM_LOCK:
+        pythoncom.CoInitialize()
+        app = new_doc = None
+        sources: dict[str, object] = {}
+        starts_cache: dict[str, list[int]] = {}
+        try:
+            app = win32.DispatchEx("Word.Application")
+            app.Visible = False
+            app.DisplayAlerts = 0
+            try:
+                app.Options.UpdateLinksAtOpen = False
+            except Exception:
+                pass
+
+            def open_src(path: Path):
+                key = str(path).lower()
+                if key not in sources:
+                    # 最后一个参数 Visible=True：给文档建出窗口，GoTo 才不崩
+                    doc = app.Documents.Open(
+                        str(path), False, True, False, "", "", False, "", "", 0, 0, True
+                    )
+                    sources[key] = doc
+                    starts_cache[key] = _wd_page_starts(doc)
+                return sources[key], starts_cache[key]
+
+            # 先把所有 Word 源打开（顺便预热分页），再建目标文档
+            for seg in segments:
+                if seg[0] != "word":
+                    continue
+                open_src(Path(seg[1]))
+
+            new_doc = app.Documents.Add()
+            if sources:
+                _wd_copy_page_setup(next(iter(sources.values())), new_doc)
+            try:
+                usable = float(new_doc.PageSetup.PageWidth) - float(new_doc.PageSetup.LeftMargin) \
+                    - float(new_doc.PageSetup.RightMargin)
+            except Exception:
+                usable = 0.0
+
+            first = True
+            total = len(segments)
+            for i, seg in enumerate(segments, start=1):
+                if progress:
+                    progress(i, total, f"拼装第 {i}/{total} 页")
+                if not first:
+                    tail = new_doc.Content
+                    tail.Collapse(_WD_COLLAPSE_END)
+                    tail.InsertBreak(_WD_PAGE_BREAK)
+                first = False
+
+                dst = new_doc.Content
+                dst.Collapse(_WD_COLLAPSE_END)
+
+                if seg[0] == "word":
+                    doc, starts = open_src(Path(seg[1]))
+                    a, b, closed = _wd_page_span(doc, starts, int(seg[2]))
+                    dst.FormattedText = doc.Range(a, b).FormattedText
+                    if not closed:
+                        # 页边界切在段落中间：补一个段落标记，免得下一页的内容接在同一段里
+                        tail = new_doc.Content
+                        tail.Collapse(_WD_COLLAPSE_END)
+                        tail.InsertAfter("\r")
+                else:
+                    pic = Path(seg[1])
+                    shape = new_doc.InlineShapes.AddPicture(str(pic), False, True, dst)
+                    if usable > 0:
+                        try:
+                            shape.LockAspectRatio = -1
+                            shape.Width = usable
+                        except Exception:
+                            pass
+
+            new_doc.SaveAs2(str(out_path), _WD_FORMAT_DOCX)
+        finally:
+            if new_doc is not None:
+                try:
+                    new_doc.Close(SaveChanges=0)
+                except Exception:
+                    pass
+            for doc in sources.values():
+                try:
+                    doc.Close(SaveChanges=0)
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.Quit(SaveChanges=0)
+                except Exception:
+                    pass
+            pythoncom.CoUninitialize()
+
+
 def _soffice_convert(src: Path, out_pdf: Path, kind: str) -> None:
     exe = soffice_path()
     if not exe:

@@ -4,7 +4,7 @@
 
 | 工具 | 功能 |
 | --- | --- |
-| **页面提取** | 从 **PDF / Word / PPT** 里挑出指定的页，从 **Excel** 里挑出指定的工作表，一次导出成**图片**或**文件** |
+| **页面提取** | 从 **PDF / Word / PPT** 里挑出指定的页，从 **Excel** 里挑出指定的工作表，一次导出成**图片**或**文件**；多份 Word 还能**按任意顺序合并成一份** |
 | **图片转 ICO** | 把 JPG / PNG 等图片变成 Windows `.ico` 图标：圆角实时预览，一键导出七档尺寸 |
 
 界面基于 PySide6，顶部一键切换两个工具。
@@ -37,10 +37,13 @@ python main.py
 
 1. **添加文件**：把 PDF / Word / PPT / Excel **拖到窗口任意位置**（拖文件夹会递归扫描子目录），或用「添加文件 / 添加文件夹」。
 2. **勾选内容**：左侧选中一个文件，中间会显示这一页/这张表的缩略图；点缩略图或勾选框选择，双击可看大图。页数多的文件默认不勾选，用「全选」。
-3. **设置输出**：右侧选格式、清晰度、输出目录，可选文件名前缀/后缀。
-4. **开始导出**：进度条走完会提示生成的文件数，可直接打开输出目录。
+3. **排顺序（可选）**：中间下方的「**导出顺序**」条会把**所有文件**里已勾选的页按勾选先后排成一列，
+   直接把它拖到想要的位置就行，也可以用「◀ 前移 / 后移 ▶」。它决定合并成一份 Word 时的页序。
+4. **设置输出**：右侧选格式、清晰度、输出目录，可选文件名前缀/后缀。
+5. **开始导出**：进度条走完会提示生成的文件数，可直接打开输出目录。
 
 > 多个文件会依次处理，勾选状态按文件分别记住，一次「开始导出」全部产出。
+> 勾上「多份文档合并为一个 Word」时，所有选中的页（可跨文件）会按「导出顺序」拼成**一个** .docx。
 
 ### 导出格式能做什么
 
@@ -48,7 +51,8 @@ python main.py
 | --- | --- | --- |
 | PDF / Word / PPT 的页 | PNG / JPG | 按 DPI 光栅化，一页一张图；勾「拼成一张长图」则合成竖版长图 |
 | PDF / Word / PPT 的页 | PDF | 直接复制原始页面对象，矢量、链接、书签都保留 |
-| PDF / Word / PPT 的页 | DOCX | 每页渲成 100–300 DPI 图片，按 A4 页宽排版，一页一段 |
+| PDF / Word / PPT 的页 | DOCX | 每个文件各出一份；Word 的页可跨文件合并成一份，见下 |
+| **多份 Word 的页（可跨文件）** | **DOCX + 合并** | 按「导出顺序」拼成一份新文档。**Word 的页是原生拼接**（文字可选可编辑，表格、图片、字体都保留）；PDF / PPT / Excel 的页渲染成整页图片贴进去 |
 | Excel 的工作表 | PNG / JPG | 整表渲染（默认「适应一页宽」），宽表自动缩放不被截断 |
 | Excel 的工作表 | XLSX | 工作表原样复制到新工作簿，保留格式、列宽、合并单元格、公式 |
 | Excel 的工作表 | PDF | 每张表按打印区域转 PDF 后合并 |
@@ -87,13 +91,13 @@ app_icon.ico            程序图标
 core/
   models.py             Unit / ExportSpec / Job 等数据模型 + 支持的文件类型
   sources.py            PdfSource / WordSource / PptSource / ExcelSource，统一 open/units/thumbnail/render/export
-  office.py             Office COM 桥接（Word/PPT→PDF、Excel 单表转 PDF/另存、PPT 删页另存）、缓存与降级
+  office.py             Office COM 桥接（Word/PPT→PDF、Excel 单表转 PDF/另存、PPT 删页另存、Word 按页取 Range 合并）、缓存与降级
   exporter.py           图片 / PDF / DOCX / XLSX / PPTX 五种导出器 + 长图拼接 + 命名冲突处理
   iconizer.py           ICO 生成核心逻辑（纯 Pillow：读取/正方形化/圆角/打包七档尺寸）
 ui/
   shell.py              主窗口壳：品牌栏 + 「页面提取 / 图片转 ICO」切换 + 拖放路由
   dnd.py                全局文件拖放：应用级事件过滤器 + 松手前的悬停提示层
-  extract_page.py       页面提取工具页（三栏界面、拖放兜底、导出编排）
+  extract_page.py       页面提取工具页（三栏界面、导出顺序条、拖放兜底、导出编排）
   ico_page.py           图片转 ICO 工具页（滑杆实时预览、导出）
   state.py              DocEntry 状态、Loader 与 Thumbnailer 后台线程
   widgets.py            单位卡片、缩略图网格、大图预览
@@ -105,6 +109,7 @@ tools/
   fetch_wheels.py       弱网环境分片下载 wheel 再离线安装
 tests/
   smoke_test.py         18 项无界面自测（解析→导出→回读校验）
+  gui_smoke.py          离屏界面测试：勾选联动、导出顺序、合并 Word 端到端
   gui_smoke.py          离屏启动 GUI 的冒烟测试（含 ICO 工具页）
   test_iconizer.py      ICO 核心算法 + 界面冒烟测试
 docs/
@@ -156,6 +161,7 @@ docs/
 ```powershell
 python tools/make_samples.py
 python tests/smoke_test.py     # 18 项：四种来源 × 各导出格式，回读校验页数/尺寸/表名/幻灯片数
+python tests/gui_smoke.py      # 离屏界面测试：勾选、调顺序、合并 Word 后回读校验页序
 python tests/test_iconizer.py  # ICO 算法 + 界面冒烟
 python tests/gui_smoke.py      # 离屏启动界面，检查信号与状态流转（含工具切换）
 ```
@@ -185,6 +191,16 @@ Qt 语言包 6.7 MB、TLS 后端、TIFF 格式插件等），详见 spec 内注�
 
 **PPT 文件打不开 / 提示未检测到 PowerPoint？** 幻灯片的分页完全由 PowerPoint 决定（先另存 PDF 再取页），
 没装 Office 的机器解析不了；只装了 LibreOffice 可以用它转 PDF 出图，但「导出 PowerPoint」格式需要真 Office。
+
+**合并 Word 出来的文档，页眉页脚 / 页码怎么没了？** 合并走的是 Word 的范围复制（Range → Range），
+它只搬正文内容，页眉页脚属于「节」的属性，搬不过来。所以合并后的文档用的是新文档自己的页眉页脚（通常是空的）。
+需要统一页眉页脚的话，合并完在 Word 里双击页眉区设一次就行。
+
+**合并 Word 会不会改动我的原文件？** 不会。所有源文档都是**只读**打开的，新内容写在新建的文档里，
+退出时源文件一律 `Close(SaveChanges=0)`，连「是否保存」的提示都不会有。
+
+**合并 Word 需要装 Word 吗？** 想要「文字可选可编辑」的效果就必须装（要借 Word 的排版和范围复制）。
+没装 Word 时这个功能仍然可用，只是整份退化成「页图排版」——每页渲成图片贴进 A4 文档，视觉一致但文字不能选。
 
 **Excel 导出报"未检测到 Microsoft Excel"？** 出图依赖 Excel 打印引擎。可以先装 Office，或改用「Excel 工作簿」格式导出（底层走 openpyxl，不需要 Office）。
 

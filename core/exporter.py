@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 from pathlib import Path
 
 from PIL import Image
 
-from .models import ExportSpec, Job
+from .models import ExportSpec, Job, PageRef
+from . import office
 
 _BAD_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 MAX_UNIT_TAG = 60
@@ -147,6 +149,68 @@ def run_jobs(jobs: list[Job], spec: ExportSpec, progress=None) -> list[Path]:
     return results
 
 
+# --------------------------------------------------------------------------- 合并 Word
+
+def run_merge(pages: list[PageRef], spec: ExportSpec, progress=None) -> list[Path]:
+    """把 pages 按给定顺序合并成一份 Word 文档。
+
+    Word 来源的页走原生拼接（文字可选可编辑、表格图片都在）；
+    其它来源（PDF / PPT / Excel）的页渲染成整页图片再插进去。
+    本机没有 Word 时整份退化成"页图排版"，功能仍可用。
+    """
+    if not pages:
+        raise ValueError("没有选中任何页面。")
+
+    out_dir = Path(spec.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stems = {Path(p.doc_name).stem for p in pages}
+    base = next(iter(stems)) if len(stems) == 1 else "合并文档"
+    tail = "_合并" if len(stems) == 1 else ""
+    target = _unique(out_dir / f"{_clean(f'{spec.prefix}{base}{tail}{spec.suffix}')}.docx", spec.overwrite)
+    if target is None:
+        return []
+
+    total = len(pages)
+    native = office.has_word()
+    tmp_pngs: list[Path] = []
+    try:
+        if native:
+            tmp_dir = office.cache_dir("merge")
+            segs: list[tuple] = []
+            for i, p in enumerate(pages, start=1):
+                if p.kind == "word":
+                    segs.append(("word", Path(p.source.path), _page_no(p.key)))
+                else:
+                    png = tmp_dir / f"m{os.getpid()}_{i:04d}.png"
+                    imgs = p.source.render(p.key, spec.dpi)
+                    imgs[0].convert("RGB").save(png, optimize=True)
+                    tmp_pngs.append(png)
+                    segs.append(("image", str(png)))
+                _tick(progress, i, total * 2, f"准备 {p.doc_name} · {p.label}")
+
+            def report(done: int, all_: int, msg: str) -> None:
+                if progress:
+                    progress(total + min(done, all_), total * 2, msg)
+
+            office.merge_docx(segs, target, progress=report)
+        else:
+            blocks: list[list[Image.Image]] = []
+            for i, p in enumerate(pages, start=1):
+                blocks.append(p.source.render(p.key, spec.dpi))
+                _tick(progress, i, total, f"排版 {p.doc_name} · {p.label}")
+            _build_docx(blocks, target, title="合并文档")
+    finally:
+        for png in tmp_pngs:
+            try:
+                png.unlink()
+            except Exception:
+                pass
+
+    if progress:
+        progress(total, total, f"完成，共 {total} 页 → {target.name}")
+    return [target]
+
+
 # --------------------------------------------------------------------------- 辅助
 
 def _tick(progress, done: int, total: int, msg: str) -> None:
@@ -163,6 +227,14 @@ def _save_kwargs(fmt: str, spec: ExportSpec) -> dict:
 def _clean(name: str) -> str:
     out = _BAD_CHARS.sub("_", name).strip(" .")
     return (out or "未命名")[:MAX_UNIT_TAG]
+
+
+def _page_no(key: str) -> int:
+    """页键 pN -> N（1 起）。"""
+    try:
+        return int(key[1:])
+    except Exception as exc:
+        raise ValueError(f"非法页键：{key}") from exc
 
 
 def _unique(path: Path, mode: str) -> Path | None:

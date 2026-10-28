@@ -52,7 +52,7 @@ def make_pdf(path: Path, pages: int = 6) -> None:
     doc.close()
 
 
-def make_docx(path: Path, pages: int = 3) -> None:
+def make_docx(path: Path, pages: int = 3, title: str = "项目实施方案") -> None:
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Microsoft YaHei"
@@ -61,7 +61,7 @@ def make_docx(path: Path, pages: int = 3) -> None:
     for i in range(1, pages + 1):
         if i > 1:
             doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
-        doc.add_heading(f"第 {i} 章 项目实施方案", level=1)
+        doc.add_heading(f"第 {i} 章 {title}", level=1)
         doc.add_paragraph(
             f"这是 Word 样例的第 {i} 页。Word 自身没有固定页码，PagePull 通过 Office 把文档"
             "转换为 PDF 后再确定分页，因此这里的页码与 Word 打印预览完全一致。"
@@ -197,6 +197,7 @@ def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     make_pdf(OUT / "样例报告.pdf")
     make_docx(OUT / "样例方案.docx")
+    make_docx(OUT / "样例合同.docx", pages=4, title="合同条款")
     make_xlsx(OUT / "样例数据.xlsx")
     make_pptx(OUT / "样例演示.pptx")
     for p in sorted(OUT.iterdir()):

@@ -100,6 +100,25 @@ def main() -> int:
         return 2
     shutil.rmtree(OUT, ignore_errors=True)
 
+    # 这个测试会改「输出目录 / 格式 / 清晰度」并在导出时写回注册表。
+    # 先快照真实配置，结束时原样还原（踩过一次：测试把 out_dir 写成了 out_gui）。
+    from PySide6.QtCore import QSettings
+
+    real = QSettings("MuFileTools", "PageExtract")
+    snapshot = {k: real.value(k) for k in real.allKeys()}
+    try:
+        return _run()
+    finally:
+        for k in real.allKeys():
+            if k not in snapshot:
+                real.remove(k)
+        for k, v in snapshot.items():
+            real.setValue(k, v)
+        real.sync()
+
+
+def _run() -> int:
+
     # 三个模块都换掉 QMessageBox，模态框全部变空操作
     ep.QMessageBox = _FakeBox  # type: ignore[assignment]
     ip.QMessageBox = _FakeBox  # type: ignore[assignment]
@@ -170,6 +189,7 @@ def main() -> int:
     pump(app, 0.2)
     page.fmt_box.setCurrentIndex(page.fmt_box.findData("png"))
     page.dpi_box.setCurrentIndex(page.dpi_box.findData(150))
+    page.opt_long.setChecked(False)      # 别被注册表里的旧偏好带跑：这里要的是逐页出图
     page.out_dir.setText(str(OUT))
     page._sync_option_state()
     page._start_export()
@@ -192,7 +212,63 @@ def main() -> int:
     books = sorted(OUT.glob("*.xlsx"))
     expect(len(books) == 1, "生成 1 个工作簿", f"{[f.name for f in books]}")
 
-    print("[7] 图片转 ICO 页签")
+    print("[7] 合并 Word：两份文档各取部分页 + 调顺序")
+    page.add_paths([str(SAMPLES / "样例方案.docx"), str(SAMPLES / "样例合同.docx")])
+    ok = wait_until(app, lambda: all(not e.loading for e in page.entries.values()), 240, "Word 解析")
+    expect(ok, "两份 Word 解析完成")
+    doc_a = next(e for e in page.entries.values() if e.name == "样例方案.docx")
+    doc_b = next(e for e in page.entries.values() if e.name == "样例合同.docx")
+    expect(len(doc_a.units) == 3 and len(doc_b.units) == 4, "页数正确（3 / 4）",
+           f"{len(doc_a.units)} / {len(doc_b.units)}")
+
+    # 全部清空，然后精确地勾：A 的第 1、3 页，B 的第 2 页
+    for e in (pdf_entry, xls_entry, doc_a, doc_b):
+        page.file_list.setCurrentRow(page.order.index(e.uid))
+        pump(app, 0.15)
+        page._check_all(False)
+    page.file_list.setCurrentRow(page.order.index(doc_a.uid))
+    pump(app, 0.2)
+    for key in ("p1", "p3"):
+        next(c for c in page.grid._cards if c.unit.key == key).check.setChecked(True)
+    page.file_list.setCurrentRow(page.order.index(doc_b.uid))
+    pump(app, 0.2)
+    next(c for c in page.grid._cards if c.unit.key == "p2").check.setChecked(True)
+    pump(app, 0.2)
+    expect(len(page.ordered) == 3, "导出顺序里有 3 页", f"{page.ordered}")
+    expect([k for _u, k in page.ordered] == ["p1", "p3", "p2"], "默认按勾选先后排序",
+           f"{[k for _u, k in page.ordered]}")
+
+    # 把最后一页（B 的第 2 页）挪到最前面
+    page.order_list.setCurrentRow(2)
+    page._move_order(-1)
+    page._move_order(-1)
+    pump(app, 0.2)
+    expect([k for _u, k in page.ordered] == ["p2", "p1", "p3"], "前移生效",
+           f"{[k for _u, k in page.ordered]}")
+    expect(page.order_list.item(0).text().startswith("1."), "序号跟着刷新",
+           page.order_list.item(0).text())
+
+    page.fmt_box.setCurrentIndex(page.fmt_box.findData("docx"))
+    page._sync_option_state()
+    expect(page.opt_merge_docx.isVisibleTo(page), "Word 格式下显示合并开关")
+    page.opt_merge_docx.setChecked(True)
+    page._start_export()
+    done = wait_until(app, lambda: page._export_worker is None and page.progress.value() == 100, 300, "合并完成")
+    expect(done, "合并流程结束")
+    merged = list(OUT.glob("*.docx"))
+    expect(len(merged) == 1, "只生成 1 份 Word", f"{[f.name for f in merged]}")
+    if merged:
+        import pymupdf
+        from core.office import word_to_pdf
+        pdf = pymupdf.open(word_to_pdf(merged[0].resolve(), force=True))
+        expect(pdf.page_count == 3, "合并结果 3 页", f"{pdf.page_count}")
+        heads = [pdf[i].get_text().strip().split("\n")[0] for i in range(pdf.page_count)]
+        expect(heads[0].startswith("第 2 章 合同条款"), "第 1 页是「合同条款 第2章」", heads[0])
+        expect(heads[1].startswith("第 1 章 项目实施方案"), "第 2 页是「项目实施方案 第1章」", heads[1])
+        expect(heads[2].startswith("第 3 章 项目实施方案"), "第 3 页是「项目实施方案 第3章」", heads[2])
+        pdf.close()
+
+    print("[8] 图片转 ICO 页签")
     win._switch(1)
     pump(app, 0.2)
     expect(win.stack.currentWidget() is win.ico_page, "切换到 ICO 工具页")
@@ -215,11 +291,11 @@ def main() -> int:
     pump(app, 0.2)
     expect(win.stack.currentWidget() is page, "切回页面提取")
 
-    print("[8] 移除与清空")
+    print("[9] 移除与清空")
     page.file_list.setCurrentRow(0)
     page._remove_current()
     pump(app, 0.3)
-    expect(len(page.order) == 1, "移除后剩 1 个文件", f"{len(page.order)}")
+    expect(len(page.order) == 3, "移除后剩 3 个文件", f"{len(page.order)}")
     page._clear_all()
     pump(app, 0.3)
     expect(len(page.order) == 0, "清空队列生效")
