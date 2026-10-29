@@ -403,6 +403,41 @@ _COVER_STYLES = ("标题", "Title", "副标题", "Subtitle")
 _TOC_EMPTY_HINTS = ("未找到目录项", "No table of contents entries")
 
 
+def _wd_para_text(p) -> str:
+    """取段落纯文本（去掉段落标记 \\r 和单元格标记 \\x07）。"""
+    try:
+        raw = str(p.Range.Text)
+    except Exception:
+        return ""
+    return raw.replace("\r", "").replace("\x07", "").strip()
+
+
+def _wd_cover_field_count(doc, from_idx: int, *, span: int = 20) -> int:
+    """从第 from_idx 段往后数「封面字段行」有几条（够 2 条就提前返回）。
+
+    用途：判断一个候选标题是不是**还在封面上**。封面大标题和章标题在 Word 眼里
+    没有区别（都是大纲级别 1），但封面标题后面一定跟着一串
+    「学院：」「姓名：」「指导教师：」的报名表式字段 —— 正文标题后面不会有。
+    """
+    try:
+        total = int(doc.Paragraphs.Count)
+    except Exception:
+        return 0
+    from .outline import _COVER_FIELD_RE      # 正则在 outline 里，两处共用一份
+  
+    count = 0
+    for j in range(from_idx + 1, min(total, from_idx + span) + 1):
+        try:
+            text = _wd_para_text(doc.Paragraphs(j))
+        except Exception:
+            break
+        if text and _COVER_FIELD_RE.match(text):
+            count += 1
+            if count >= 2:
+                return count
+    return count
+
+
 def _wd_first_heading_pos(doc, *, scan: int = 400) -> int:
     """返回第一个「正文标题」段落的起始字符位置；找不到返回 0。
 
@@ -415,6 +450,15 @@ def _wd_first_heading_pos(doc, *, scan: int = 400) -> int:
     按样式量长度会得到 0，于是目录被插到封面**前面**去（真实踩过）。
     而「第一个正文标题之前」这个位置，无论封面多长、有没有样式，都天然是正文开头。
     目录条目自己的样式是 TOC 1/2/3，OutlineLevel 是正文值，不会被误认成标题。
+
+    三个「不算标题」的例外，每一条都是真踩出来的：
+
+    * **空段落**。WPS 存出来的文档开头常常躺着一个空的「标题 3」段落（格式残留），
+      它的 OutlineLevel 是 3，按老逻辑第一个就命中它、返回位置 0，
+      于是目录又被插回封面之前 —— v1.6.0 收到的那份调查报告就是这么错的。
+    * **表格里的段落**。封面信息常用表格排版，格子里套着标题样式也不该当插入点。
+    * **目录域自己的行**。样式是 TOC 1..9，大纲级别本来是正文值，但被用户手动标过
+      就会变成 1..9。跳过 `TOC` 开头的样式，避免把新目录插进旧目录中间。
     """
     try:
         count = int(doc.Paragraphs.Count)
@@ -426,9 +470,149 @@ def _wd_first_heading_pos(doc, *, scan: int = 400) -> int:
             level = int(p.OutlineLevel)
         except Exception:
             break
-        if 1 <= level <= 9:
-            return int(p.Range.Start)
+        if not (1 <= level <= 9):
+            continue
+        if not _wd_para_text(p):
+            continue                      # 空段落不是标题
+        try:
+            if p.Range.Information(12):   # wdWithInTable
+                continue
+        except Exception:
+            pass
+        try:
+            if _wd_is_toc_style_para(p):
+                continue                  # 旧目录的条目行
+        except Exception:
+            pass
+        if _wd_cover_field_count(doc, i) >= 2:
+            continue                      # 后面跟着一串报名表字段 → 这是封面标题
+        return int(p.Range.Start)
     return 0
+
+
+def _wd_is_toc_style_para(para) -> bool:
+    """段落样式是不是目录条目（TOC 1..9 / 目录 1..9 / TOC Heading）。"""
+    try:
+        name = str(para.Style.NameLocal).upper()
+    except Exception:
+        return False
+    if name.startswith("TOC"):
+        return True
+    return name.startswith("目录") and name[-1:].isdigit()
+
+
+def _wd_flatten_empty_headings(doc) -> int:
+    """把「空段落」身上的标题属性清掉，返回处理条数。
+
+    空的大纲段落会被目录收成一条**只有页码、没有标题字**的怪条目
+    （实测：目录第一行孤零零一个「2」）。它不承载任何内容，
+    清掉对排版几乎零影响，只是让它别进目录。
+
+    **必须改样式，不能改 OutlineLevel**：实测对「标题 1/2/3」这类内置样式段落，
+    `p.OutlineLevel = 10` 和 `p.Range.ParagraphFormat.OutlineLevel = 10`
+    两种写法都**静默失效**（赋值不报错，读回还是 3）—— Word 认为大纲级别
+    由标题样式决定，不接受段落级覆盖。改套「正文」样式才真的生效。
+    """
+    try:
+        count = int(doc.Paragraphs.Count)
+    except Exception:
+        return 0
+    done = 0
+    for i in range(1, count + 1):
+        try:
+            p = doc.Paragraphs(i)
+            if not (1 <= int(p.OutlineLevel) <= 9):
+                continue
+            if _wd_para_text(p):
+                continue
+            p.Style = -1                   # wdStyleNormal：空段落套标题样式没有意义
+            done += 1
+        except Exception:
+            continue
+    return done
+
+
+def _wd_para_index_at(doc, pos: int) -> int:
+    """字符位置 pos 落在第几段（Word 的 1 基下标）；找不到返回 0。"""
+    try:
+        count = int(doc.Paragraphs.Count)
+    except Exception:
+        return 0
+    for i in range(1, count + 1):
+        try:
+            rng = doc.Paragraphs(i).Range
+            if int(rng.Start) <= pos <= int(rng.End):
+                return i
+        except Exception:
+            return 0
+    return 0
+
+
+def _wd_back_over_empty(doc, pos: int) -> int:
+    """把插入点往前挪过**紧邻的空段落**，返回新的字符位置。
+
+    封面和正文之间常夹着一堆空段落（WPS 排版残留）。目录插在它们**之后**，
+    再给目录设「段前分页」，那些空段落就被单独留在一页上 —— 实测封面第 1 页、
+    空页第 2 页、目录第 3 页。往前挪到空段落之前，空页就没了。
+
+    只跳过真正的空段落（无文字、无图、无表格标记），遇到有内容的立刻停。
+    """
+    idx = _wd_para_index_at(doc, pos)
+    if idx <= 1:
+        return pos
+    j = idx - 1
+    while j >= 1:
+        try:
+            p = doc.Paragraphs(j)
+            if _wd_para_text(p):
+                break
+            pos = int(p.Range.Start)
+        except Exception:
+            break
+        j -= 1
+    return pos
+
+
+def _wd_next_nonempty_pos(doc, pos: int) -> int:
+    """从 pos 往后找第一个非空段落的起点，返回它；找不到返回 pos 本身。
+
+    用来把「正文另起一页」的分页属性放在**正文第一段**上，
+    而不是目录后面那个空段落上（否则正文顶部会多一个空行）。
+    """
+    idx = _wd_para_index_at(doc, pos)
+    if idx <= 0:
+        return pos
+    try:
+        count = int(doc.Paragraphs.Count)
+    except Exception:
+        return pos
+    for i in range(idx, count + 1):
+        try:
+            p = doc.Paragraphs(i)
+            if _wd_para_text(p):
+                return int(p.Range.Start)
+        except Exception:
+            break
+    return pos
+
+
+def _wd_page_anchor(doc, after_page: int) -> int:
+    """返回「第 after_page 页之后」对应的字符位置（即第 after_page+1 页的页首）。
+
+    页码按**插目录之前**的排版算 —— 界面上也是这么写的，用户看到的是他手上的稿子。
+    """
+    doc.Repaginate()
+    try:
+        total = int(doc.ComputeStatistics(2))      # wdStatisticPages
+    except Exception:
+        total = 0
+    if total <= 0 or after_page >= total:
+        return int(doc.Content.End) - 1            # 插在文档末尾之前
+    try:
+        rng = doc.GoTo(1, 1, int(after_page) + 1)  # wdGoToPage, wdGoToAbsolute
+        return int(rng.Start)
+    except Exception:
+        return 0
 
 
 def _wd_title_block_end(doc) -> int:
@@ -454,8 +638,23 @@ def _wd_title_block_end(doc) -> int:
     return end
 
 
-def _wd_toc_anchor(doc) -> int:
-    """算目录该插在哪个字符位置：优先「第一个正文标题之前」，兜底封面块末尾。"""
+def _wd_toc_anchor(doc, anchor=None) -> int:
+    """算目录该插在哪个字符位置。
+
+    ``anchor`` 三种取值：
+
+    * ``None`` / ``"auto"``：自动 —— 优先「第一个正文标题之前」，兜底封面块末尾。
+    * ``"start"``：文档最前面（封面之前）。
+    * ``("page", N)``：第 N 页之后（按插目录前的排版算）。
+
+    自动判断既然是「猜」，就必须留手动兜底：封面和正文挤在同一页、
+    或者封面本身用了标题样式时，任何启发式都会出错，只有人知道该插哪。
+    """
+    if anchor == "start":
+        return 0
+    if isinstance(anchor, (tuple, list)) and len(anchor) == 2 and anchor[0] == "page":
+        return _wd_page_anchor(doc, int(anchor[1]))
+
     pos = _wd_first_heading_pos(doc)
     if pos > 0:
         return pos
@@ -609,7 +808,8 @@ def _wd_style_toc_heading(head, doc) -> None:
 def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
                         page_break: bool = True,
                         replace_existing: bool = True,
-                        use_outline: bool = False) -> tuple[str, int, int]:
+                        use_outline: bool = False,
+                        anchor=None) -> tuple[str, int, int]:
     """在已打开的 Word 文档里弄出一个原生目录，返回 (模式, 删掉/更新的旧目录数, 条目数)。
 
     两种模式，靠文档里**原来有没有目录**分流 —— 这是这件事的关键：
@@ -622,6 +822,9 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
     手动标记的段落没有标题样式、只有大纲级别，必须开这个开关才收得进去；
     对纯标题样式的文档没有副作用 —— 标题样式自带的大纲级别本来就在收录范围内。
 
+    ``anchor`` 只在「新建」时有用，见 `_wd_toc_anchor()`：默认自动猜，
+    也可以指定「文档最前面」或「第 N 页之后」。
+
     分页一律用段落属性 PageBreakBefore，**不插分页符字符**：
     删旧目录时带不走分页符，位置又会随域刷新漂移，重复生成会一次多一页
     （实测 4 页 → 5 页 → 6 页）。段落属性不占字符，天然幂等。
@@ -630,6 +833,10 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
     目录里每条目都是一个超链接域，全文档刷域在大文档上明显更慢且没有收益。
     """
     levels = max(1, min(4, int(levels or 3)))
+
+    # 空的大纲段落会被目录收成一条只有页码的怪条目，两头都要先清掉。
+    # 放在最前面：这样「就地更新」那条路也受益（旧目录里的空条目会一起去掉）。
+    _wd_flatten_empty_headings(doc)
 
     try:
         existing = int(doc.TablesOfContents.Count)
@@ -652,15 +859,24 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
     removed = _wd_delete_tocs(doc)
 
     # ---- 情况二：没有目录 → 找位置新建 ----
-    pos = _wd_toc_anchor(doc)
-    after_cover = pos > 0
+    pos = _wd_toc_anchor(doc, anchor)
+    is_auto = anchor is None or anchor == "auto"
+    if is_auto:
+        pos = _wd_back_over_empty(doc, pos)   # 别把封面和正文之间的空段落顶成空页
+
+    # 「目录」这一行要不要「段前分页」：
+    #   · 自动 → 要。封面可能和正文挤在同一页，得让目录另起一页。
+    #   · 最前面 → 不要，它就在文档第一页开头。
+    #   · 指定页之后 → 不要，那个位置已经是某一页的第一个字符了，
+    #     再设分页反而会把前面那页的空段落孤立成一张空白页（实测踩过）。
+    need_break_before = is_auto and pos > 0
 
     if with_title:
         doc.Range(pos, pos).InsertBefore(_TOC_TITLE + "\r")
         head = doc.Range(pos, pos + len(_TOC_TITLE))
         _wd_style_toc_heading(head, doc)
         try:
-            if after_cover:
+            if need_break_before:
                 head.ParagraphFormat.PageBreakBefore = _WD_ON   # 让封面单独一页
         except Exception:
             pass
@@ -685,7 +901,11 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
         try:
             end = int(toc.Range.End)
             if end < int(doc.Content.End):
-                doc.Range(end, end).ParagraphFormat.PageBreakBefore = _WD_ON   # 正文另起一页
+                # 分页属性落在**正文第一段**上，而不是目录后面那个空段落上 ——
+                # 落在空段上会让正文顶部多一个空行
+                target = _wd_next_nonempty_pos(doc, end)
+                if target < int(doc.Content.End):
+                    doc.Range(target, target).ParagraphFormat.PageBreakBefore = _WD_ON
         except Exception:
             pass
 
@@ -703,7 +923,7 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
 
 def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
                     page_break: bool = True, replace_existing: bool = True,
-                    marks: dict | None = None, progress=None) -> dict:
+                    marks: dict | None = None, anchor=None, progress=None) -> dict:
     """复制一份 src 到 out_path，在**副本**里插目录 —— 源文件不参与任何写入。
 
     为什么用「复制文件 → 改副本」而不是「只读打开 → FormattedText 复制」：
@@ -715,7 +935,10 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
     之所以不用 Word 的 Paragraphs(i) 去对号：python-docx 的 paragraphs 不含
     表格内段落，两边下标根本对不上，会标错行。
 
-    返回 {"out": Path, "entries": int, "replaced": int, "mode": str}
+    anchor 决定目录插哪儿（只在文档原本没目录时生效）：
+    ``None``/``"auto"`` 自动猜、``"start"`` 文档最前面、``("page", N)`` 第 N 页之后。
+
+    返回 {"out": Path, "entries": int, "replaced": int, "mode": str, "anchor": str}
     """
     import pythoncom
     import win32com.client as win32
@@ -770,7 +993,8 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
             mode, removed, entries = _wd_insert_toc_into(
                 doc, levels, with_title=with_title,
                 page_break=page_break, replace_existing=replace_existing,
-                use_outline=bool(marks),
+                use_outline=True,          # 总带 \u：纯样式文档无副作用，标记文档才收得到
+                anchor=anchor,
             )
             if entries <= 0:
                 raise RuntimeError(
@@ -803,6 +1027,82 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
         else:
             progress(4, 4, f"完成：{out_path.name}（新插入目录，{entries} 条）")
     return {"out": out_path, "entries": entries, "replaced": removed, "mode": mode}
+
+
+def list_pages(src, *, limit_snippet: int = 40) -> list[dict]:
+    """列出文档每一页的「页首文字」，给「目录插在第几页之后」用。
+
+    为什么要列文字而不是只给页码：用户很难数清「封面是第 1 页还是第 2 页」，
+    但一看「第 1 页 · 调查研究报告」就立刻知道该选哪个。
+
+    只读打开，不写文件；没装 Word 返回空列表（页码必须靠排版算，
+    python-docx 读不出分页位置，硬猜不如不给）。
+
+    返回 ``[{"page": 1, "text": "调查研究报告"}, ...]``
+    """
+    import pythoncom
+    import win32com.client as win32
+
+    src = Path(src)
+    if not src.is_file() or not has_word():
+        return []
+
+    pages: list[dict] = []
+    with _COM_LOCK:
+        pythoncom.CoInitialize()
+        app = doc = None
+        try:
+            app = win32.DispatchEx("Word.Application")
+            app.Visible = False
+            app.DisplayAlerts = 0
+            try:
+                app.Options.UpdateLinksAtOpen = False
+            except Exception:
+                pass
+            # 只读打开：第 3 个参数 ReadOnly=True
+            doc = app.Documents.Open(str(src), False, True, False, "",
+                                     "", False, "", "", 0, 0, True)
+            doc.Repaginate()
+            try:
+                total = int(doc.ComputeStatistics(2))      # wdStatisticPages
+            except Exception:
+                total = 0
+            if total <= 0:
+                return []
+
+            starts: list[int] = []
+            for pg in range(1, total + 1):
+                try:
+                    starts.append(int(doc.GoTo(1, 1, pg).Start))   # wdGoToPage, wdGoToAbsolute
+                except Exception:
+                    starts.append(-1)
+            end = int(doc.Content.End)
+
+            for i, st in enumerate(starts):
+                nxt = starts[i + 1] if i + 1 < len(starts) else end
+                text = ""
+                if st >= 0 and nxt > st:
+                    try:
+                        text = str(doc.Range(st, nxt).Text)
+                    except Exception:
+                        text = ""
+                flat = " ".join(text.split())
+                pages.append({"page": i + 1, "text": flat[:limit_snippet]})
+        except Exception:
+            return []
+        finally:
+            if doc is not None:
+                try:
+                    doc.Close(SaveChanges=0)
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.Quit(SaveChanges=0)
+                except Exception:
+                    pass
+            pythoncom.CoUninitialize()
+    return pages
 
 
 def add_toc_to_docx_pydocx(src, out_path, *, levels: int = 3, with_title: bool = True,

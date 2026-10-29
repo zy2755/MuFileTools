@@ -32,6 +32,7 @@ _LIGHT = {
     "muted": "#6b7688",
     "hover_bg": "#eef3fe",        # 浅色高亮底
     "selected_bg": "#f2f7ff",
+    "select_row": "#dbe7ff",      # 表格整行选中（比 selected_bg 明显，否则肉眼看不出选没选）
     "field_bg": "#ffffff",        # 输入框底（要和面板拉开层次）
     "track": "#e8edf6",           # 滑杆轨道
     "disabled_text": "#a9b2c2",
@@ -64,6 +65,7 @@ _DARK = {
     "muted": "#98a4b8",
     "hover_bg": "#2a3a55",
     "selected_bg": "#25334a",
+    "select_row": "#2f4a72",      # 表格整行选中（和 menu_sel 同色，深色下才够醒目）
     "field_bg": "#1c212a",        # 比面板更暗，形成凹陷感
     "track": "#3d4757",           # 滑杆轨道（比背景亮才看得见）
     "disabled_text": "#5f6a7d",
@@ -163,6 +165,25 @@ QLabel#FileName {{
     font-weight: 600;
 }}
 QLabel#Warn {{ color: {danger}; font-weight: 600; }}
+
+/* ---------- 表格（标记标题 / 选目录位置） ---------- */
+QTableWidget {{
+    background: {field_bg};
+    border: 1px solid {border};
+    border-radius: 8px;
+    gridline-color: {border};
+    selection-background-color: {select_row};
+    selection-color: {text};
+}}
+QTableWidget::item {{ padding: 3px 6px; }}
+QTableWidget::item:selected {{ background: {select_row}; color: {text}; }}
+QHeaderView::section {{
+    background: {surface_alt};
+    border: none;
+    border-bottom: 1px solid {border};
+    color: {muted};
+    padding: 6px 8px;
+}}
 
 /* ---------- 按钮 ---------- */
 QPushButton {{

@@ -197,6 +197,54 @@ _RE_CN_NUM = re.compile(r"^[一二三四五六七八九十]+\s*[、．.]\s*")
 # 但收进目录毫无意义。整段只由数字、年月日、符号和空格组成就判掉。
 _RE_DATE_ONLY = re.compile(r"^[\d\s年月日\-—–~～./、,，.。:：]+$")
 
+# 封面字段行：「课 程 名 称：」「学 院：」「姓 名：」「指导教师：」这类
+# 「标签：内容」的排版。中文字之间常被空格拉开对齐，所以逐字之间都放 \s*。
+_COVER_FIELD_RE = re.compile(
+    r"^\s*(?:"
+    r"课\s*程\s*名\s*称|课\s*程|作\s*业\s*题\s*目|题\s*目|论\s*文\s*题\s*目|"
+    r"学\s*院|院\s*系|系\s*别|专\s*业|班\s*级|年\s*级|"
+    r"团\s*队|小\s*组|成\s*员|队\s*长|"
+    r"姓\s*名|学\s*号|性\s*别|"
+    r"实\s*践\s*地\s*点|实\s*践\s*单\s*位|调\s*研\s*地\s*点|"
+    r"指\s*导\s*教\s*师|指\s*导\s*老\s*师|任\s*课\s*教\s*师|"
+    r"日\s*期|时\s*间|"
+    r"学\s*校\s*名\s*称|学\s*院\s*名\s*称"
+    r")\s*[:：]"
+)
+
+_COVER_SCAN = 60            # 只在文档开头这么多段里找封面
+
+
+def cover_span(paras: list[Para]) -> int:
+    """返回封面区的结束下标（下标 < 返回值的段落都算封面）；识别不到返回 0。
+
+    判据是「封面字段行」：课程名称 / 作业题目 / 学院 / 团队 / 姓名 /
+    实践地点 / 指导教师 / 日期 这类「标签：内容」的排版。开头连着出现两条以上，
+    基本可以断定这一屏是封面，再往后吃掉紧跟的空行和纯日期行（「20 年 月 日」）。
+
+    为什么非认这个不可：封面的大标题（28pt、居中、加粗）在字形上和章标题
+    一模一样，自动预判会把它标成 1 级 —— 后果是目录插到封面**之前**，
+    目录第一行还多出一个「调查研究报告」。字号和居中这两条线索在封面上是失效的，
+    「后面跟了一串报名表式的字段」才是可靠信号。
+    """
+    hits = [p.index for p in paras[:_COVER_SCAN] if _COVER_FIELD_RE.match((p.text or "").strip())]
+    if len(hits) < 2:
+        return 0
+
+    last = hits[-1]
+    span = last + 1
+    for p in paras:
+        if p.index <= last:
+            continue
+        text = (p.text or "").strip()
+        if not text or _RE_DATE_ONLY.match(text):
+            span = p.index + 1
+            continue
+        break
+    return span
+
+
+
 
 def _looks_like_heading(p: Para, body: float) -> bool:
     """像不像标题 —— 只用来给界面「只看候选」过滤，不影响最终判定。"""
@@ -216,20 +264,67 @@ def _looks_like_heading(p: Para, body: float) -> bool:
     return False
 
 
-def _guess_text(text: str) -> int:
-    """纯按文字规律猜级别，猜不到返回 0。"""
+# 没有全局信息时的兜底：最常见的四层结构「第一章 / 一、/（一）/ 1.」
+_DEFAULT_LEVELS = {"chapter": 1, "cn_num": 2, "cn_paren": 3, "arabic": 1}
+
+
+def _numbering_levels(paras: list[Para], cover: int = 0) -> dict[str, int]:
+    """按文档里**实际出现**的编号体系，给每种体系排定层级。
+
+    为什么不能硬编码「一、=2 级」：文档的层级组合差别很大 ——
+    有「第一章」的，一、是二级；没有章的，一、就是一级。
+    固定映射会让缺一层的文档整体错位一级（真实踩过：一份
+    「一、/（一）/1.」的三层报告，预判成了一 2 级、 （一）3 级、1. 1 级，
+    目录里「1.」反而比「一、」高一层）。
+
+    做法：按「从粗到细」的固定顺序排队，**只在文档里出现才算一号**。
+    阿拉伯数字另有「1. / 1.1 / 1.1.1」的点数细分，由调用方叠加。
+    """
+    texts: list[str] = []
+    for p in paras:
+        if cover and p.index < cover:
+            continue
+        text = (p.text or "").strip()
+        if text and len(text) <= _MAX_GUESS_LEN:
+            texts.append(text)
+
+    kinds: list[str] = []
+    if any(_RE_CHAPTER.match(t) for t in texts):
+        kinds.append("chapter")
+    if any(_RE_CN_NUM.match(t) for t in texts):
+        kinds.append("cn_num")
+    if any(_RE_CN_PAREN.match(t) for t in texts):
+        kinds.append("cn_paren")
+
+    return {
+        "chapter": (kinds.index("chapter") + 1) if "chapter" in kinds else 1,
+        "cn_num": (kinds.index("cn_num") + 1) if "cn_num" in kinds else 2,
+        "cn_paren": (kinds.index("cn_paren") + 1) if "cn_paren" in kinds else 3,
+        "arabic": len(kinds) + 1,
+    }
+
+
+def _guess_text(text: str, levels: dict[str, int] | None = None) -> int:
+    """纯按文字规律猜级别，猜不到返回 0。
+
+    ``levels`` 是 `_numbering_levels()` 给出的「各编号体系排第几级」；
+    不传就按最常见的四层结构算。
+    """
     if not text:
         return 0
-    if _RE_CHAPTER.match(text) or _RE_SPECIAL.match(text):
-        return 1
+    lv = levels or _DEFAULT_LEVELS
+    if _RE_SPECIAL.match(text):
+        return 1                       # 摘要 / 附录 / 参考文献 / 致谢：总是最外层
+    if _RE_CHAPTER.match(text):
+        return lv["chapter"]
+    if _RE_CN_NUM.match(text):
+        return min(lv["cn_num"], MAX_LEVEL)
+    if _RE_CN_PAREN.match(text):
+        return min(lv["cn_paren"], MAX_LEVEL)
     m = _RE_ARABIC.match(text)
     if m:
         dots = m.group(1).count(".") + m.group(1).count("．")
-        return min(dots + 1, MAX_LEVEL)
-    if _RE_CN_PAREN.match(text):
-        return 3
-    if _RE_CN_NUM.match(text):
-        return 2
+        return min(lv["arabic"] + dots, MAX_LEVEL)
     return 0
 
 
@@ -240,6 +335,9 @@ def guess_levels(paras: list[Para]) -> dict[int, int]:
       1. 编号规律（「第三章」「一、」「1.2.3」「（四）」）—— 最可靠
       2. 字形特征（比正文大、加粗、居中）—— 兜住手打的「第一点：」这种
 
+    封面区（见 `cover_span`）里的一律不猜：那儿的「调查研究报告」是 28pt 居中的
+    大标题，字形上和章标题没有区别，但把它标进目录就全错了。
+
     故意保守：宁可漏猜让人手动补，也不要把一句普通的正文标成标题 ——
     后者要在几十行里翻出来改掉，更烦。
     """
@@ -247,8 +345,12 @@ def guess_levels(paras: list[Para]) -> dict[int, int]:
         return {}
     body = float(statistics.median([p.size for p in paras])) if paras else DEFAULT_SIZE
 
+    cover = cover_span(paras)
+    levels = _numbering_levels(paras, cover)
     marks: dict[int, int] = {}
     for p in paras:
+        if cover and p.index < cover:
+            continue          # 封面上的字不进目录
         text = p.text.strip()
         if len(text) > _MAX_GUESS_LEN:
             continue
@@ -257,7 +359,7 @@ def guess_levels(paras: list[Para]) -> dict[int, int]:
         if text and text[-1] in "。，；,;：:":
             continue          # 以标点收尾的十有八九是正文，不是标题
 
-        level = _guess_text(text)
+        level = _guess_text(text, levels)
         if level == 0:
             big = p.size - body
             if p.centered and big >= 4:

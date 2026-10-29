@@ -378,6 +378,39 @@ def _run() -> int:
            chk.paragraphs[0].text)
     expect("第 1 章" in chk.paragraphs[1].text, "次段是目录正文", chk.paragraphs[1].text[:40])
 
+    # 「目录放在」下拉：默认自动、能切最前面、换文件复位、能记手动选的页
+    expect(tpage.pos_box.count() == 3, "位置下拉有 3 项", str(tpage.pos_box.count()))
+    expect(tpage.pos_box.currentData() == "auto", "默认是自动判断")
+    expect(tpage._anchor() is None, "默认 anchor 为 None（自动）")
+
+    tpage.pos_box.setCurrentIndex(1)                 # 文档最前面
+    pump(app, 0.1)
+    expect(tpage._anchor() == "start", "选「文档最前面」后 anchor=start",
+           str(tpage._anchor()))
+
+    res_front = tpage._generate_to(str(OUT / "样例方案_目录在最前.docx"))
+    front_doc = _Doc(str(res_front["out"]))
+    expect(front_doc.paragraphs[0].text.strip() == "目录",
+           "「文档最前面」时首段就是目录", front_doc.paragraphs[0].text)
+
+    tpage._reset_pos_choice()
+    pump(app, 0.1)
+    expect(tpage._anchor() is None and tpage.pos_box.currentIndex() == 0,
+           "复位回自动判断")
+
+    # 模拟「选了某一页之后」的状态（真点会弹模态对话框，这里直接置状态）
+    tpage.pos_box.blockSignals(True)
+    tpage.pos_box.setCurrentIndex(2)
+    tpage.pos_box.blockSignals(False)
+    tpage._anchor_page = 2
+    expect(tpage._anchor() == ("page", 2), "手动指定「第 2 页之后」生效",
+           str(tpage._anchor()))
+
+    # 换一份文件必须复位 —— 上一份文档的第 2 页和这一份没有关系
+    tpage.load_path(str(SAMPLES / "样例方案.docx"))
+    pump(app, 0.2)
+    expect(tpage._anchor() is None, "换文件后位置复位回自动", str(tpage._anchor()))
+
     print("[9b] 手动标标题")
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt

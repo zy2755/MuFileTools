@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from core import office, outline, toc
 from core.exporter import _unique
 from ui.mark_dialog import MarkDialog
+from ui.position_dialog import PositionDialog
 
 NO_TITLE_HINT = (
     "没有识别到标题样式，Word 只会插一个空目录。\n"
@@ -91,7 +92,8 @@ class _TocWorker(QThread):
                     msg += f"，替换了 {res['replaced']} 个旧目录"
                 self.done.emit(True, msg, str(res["out"]))
             else:
-                plain = {k: v for k, v in self._opts.items() if k != "replace_existing"}
+                plain = {k: v for k, v in self._opts.items()
+                         if k not in ("replace_existing", "anchor")}
                 plain["rows"] = self._rows or None   # 手动标记的结果要填进域结果里
                 res = office.add_toc_to_docx_pydocx(
                     self._src, self._out, progress=self._report, **plain
@@ -120,6 +122,7 @@ class TocPage(QWidget):
         self._has_toc = False          # 载入的文档里本来就有目录？
         self._marks: dict[int, int] = {}   # 手动标的 {段落下标: 级别}
         self._edited = False           # 这份文档的标题是不是手动标的
+        self._anchor_page = 0          # 手动选的「插在第 N 页之后」；0 = 没选
         self._worker: _TocWorker | None = None
         self._settings = QSettings("MuFileTools", "TocPage")
 
@@ -196,6 +199,23 @@ class TocPage(QWidget):
         self.depth_box.currentIndexChanged.connect(self._on_depth_changed)
         depth_row.addWidget(self.depth_box, 1)
         rv.addLayout(depth_row)
+
+        # 目录插哪儿。自动判断能覆盖大多数文档，但封面和正文挤在一页、
+        # 或者前面还压着「任务书 / 评阅表」时，只有人知道该插在哪 —— 留个手动口子。
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(8)
+        pos_row.addWidget(QLabel("目录放在"))
+        self.pos_box = QComboBox()
+        self.pos_box.addItem("自动（封面之后）", "auto")
+        self.pos_box.addItem("文档最前面", "start")
+        self.pos_box.addItem("选择某一页之后…", "pick")
+        self.pos_box.setToolTip(
+            "默认自动判断：插在第一个正文标题之前。\n"
+            "判断不对时选「选择某一页之后…」，会列出每页开头的文字让你挑。"
+        )
+        self.pos_box.currentIndexChanged.connect(self._on_pos_changed)
+        pos_row.addWidget(self.pos_box, 1)
+        rv.addLayout(pos_row)
 
         self.opt_title = QCheckBox("在目录上方加一行「目录」标题")
         self.opt_break = QCheckBox("目录单独起页（正文从下一页开始）")
@@ -322,6 +342,8 @@ class TocPage(QWidget):
         self.src_path = str(p)
         self._marks = {}
         self._edited = False
+        # 换文档就别沿用上一份的页码 —— 那份文档的第 3 页和这份毫无关系
+        self._reset_pos_choice()
         suffix = p.suffix.lower()
         if suffix not in toc.DOCX_EXTS:
             self._rows = []
@@ -360,6 +382,7 @@ class TocPage(QWidget):
         self._has_toc = False
         self._marks = {}
         self._edited = False
+        self._reset_pos_choice()
         self._refresh_view()
         self.notify("就绪 — 把一个 .docx 拖到窗口任意位置，或点「选择 Word…」")
 
@@ -432,6 +455,64 @@ class TocPage(QWidget):
             depth = int(self.depth_box.currentData())
             count = sum(toc.level_counts(self._rows, depth).values())
             self.notify(f"{count} 条标题将进入目录")
+
+    # ------------------------------------------------------------------ 目录位置
+    def _on_pos_changed(self, _index: int) -> None:
+        if self.pos_box.currentData() != "pick":
+            self._anchor_page = 0
+            return
+        if not self.src_path:
+            self._reset_pos_choice()
+            QMessageBox.information(self, "提示", "请先载入一份 .docx 文档。")
+            return
+        self.pick_position()
+
+    def pick_position(self) -> None:
+        """弹「选哪一页之后」，选完把下拉第三项改成「第 N 页之后」。"""
+        if not self.src_path:
+            return
+        if not office.has_word():
+            self._reset_pos_choice()
+            QMessageBox.information(
+                self, "需要 Word",
+                "按页选位置要靠 Word 排版才能算出每页的边界，本机没检测到 Word。\n\n"
+                "可以先用「自动（封面之后）」，或索性安装 Word 后再选。",
+            )
+            return
+
+        dlg = PositionDialog(self.src_path, self)
+        accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        page = dlg.page() if accepted else 0
+        dlg.shutdown()
+        if page <= 0:
+            self._reset_pos_choice()
+            return
+
+        self._anchor_page = page
+        idx = self.pos_box.findData("pick")
+        if idx >= 0:
+            # 只改显示文字，data 保持 "pick" —— 点一下还能重选
+            self.pos_box.setItemText(idx, f"第 {page} 页之后（点这里重选）")
+            self.pos_box.setCurrentIndex(idx)
+        self.notify(f"目录将插在第 {page} 页之后")
+
+    def _reset_pos_choice(self) -> None:
+        """把下拉退回「自动」，并恢复第三项原来的文字。"""
+        self._anchor_page = 0
+        idx = self.pos_box.findData("pick")
+        if idx >= 0:
+            self.pos_box.setItemText(idx, "选择某一页之后…")
+        self.pos_box.blockSignals(True)
+        self.pos_box.setCurrentIndex(0)        # 自动
+        self.pos_box.blockSignals(False)
+
+    def _anchor(self):
+        """给 core.office 的锚点参数：None=自动 / "start" / ("page", N)。"""
+        if self._anchor_page > 0:
+            return ("page", self._anchor_page)
+        if self.pos_box.currentData() == "start":
+            return "start"
+        return None
 
     def _refresh_view(self) -> None:
         if not self.src_path:
@@ -521,6 +602,7 @@ class TocPage(QWidget):
             "page_break": self.opt_break.isChecked(),
             "replace_existing": self.opt_replace.isChecked(),
             "marks": dict(self._marks),
+            "anchor": self._anchor(),
         }
 
     def _generate_to(self, out_path: str) -> dict:
@@ -533,7 +615,8 @@ class TocPage(QWidget):
         opts = self._opts()
         if office.has_word():
             return office.add_toc_to_docx(self.src_path, out_path, **opts)
-        plain = {k: v for k, v in opts.items() if k != "replace_existing"}
+        plain = {k: v for k, v in opts.items()
+                 if k not in ("replace_existing", "anchor")}
         plain["rows"] = self._rows or None
         return office.add_toc_to_docx_pydocx(self.src_path, out_path, **plain)
 

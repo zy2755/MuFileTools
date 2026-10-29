@@ -321,6 +321,107 @@ def main() -> int:
         d.save(str(dst))
         return dst
 
+    def _cover_docx(dst: Path) -> Path:
+        """造一份「WPS 风格」的文档：开头空的标题 3 + 手打封面 + 正文。
+
+        三个坑一次踩齐（都来自真实反馈）：
+          1. 第一段是个**空的「标题 3」段落** —— 大纲级别 3，会骗过「第一个标题」的定位；
+          2. 封面大标题 28pt 居中，字形上和章标题没区别；
+          3. 封面用「学 院：」「姓 名：」这种报名表式字段排版。
+        """
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt
+
+        d = Document()
+        d.add_paragraph("", style="Heading 3")          # ① WPS 的格式残留
+        for _ in range(3):
+            d.add_paragraph()
+
+        t = d.add_paragraph()                           # ② 手打封面大标题
+        t.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        r = t.add_run("调查研究报告")
+        r.bold = True
+        r.font.size = Pt(28)
+
+        for label in ("课 程 名 称：", "作 业 题 目：", "学       院：",
+                      "姓       名：", "指 导 教 师："):   # ③ 封面字段
+            p = d.add_paragraph()
+            p.add_run(label + "XXX").font.size = Pt(16)
+
+        date = d.add_paragraph()
+        date.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        date.add_run("20   年    月    日").font.size = Pt(16)
+        d.add_paragraph()
+
+        body = [
+            (1, "一、引言"),
+            (0, "改革开放是决定当代中国命运的关键一招，也是决定实现两个一百年奋斗目标的关键一招。" * 3),
+            (1, "二、调查方法"),
+            (2, "（一）问卷设计"),
+            (3, "1.样本构成"),
+            (0, "本次调查共发放电子问卷三百份，回收有效问卷二百六十八份，有效回收率接近九成。" * 3),
+        ]
+        for level, text in body:
+            para = d.add_paragraph()
+            run = para.add_run(text)
+            if level:
+                run.bold = True
+                run.font.size = Pt({1: 16, 2: 14, 3: 12}[level])
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        d.save(str(dst))
+        return dst
+
+    def toc_cover() -> str:
+        from docx.oxml.ns import qn
+
+        src = _cover_docx(toc_out / "封面残留.docx")
+        paras = outline.list_paragraphs(src)
+
+        # ① 封面区要认出来，而且不能把封面大标题算进去
+        span = outline.cover_span(paras)
+        assert span > 0, "没认出封面"
+        title_idx = next(i for i, p in enumerate(paras) if p.text.strip() == "调查研究报告")
+        assert title_idx < span, (title_idx, span)
+
+        marks = outline.guess_levels(paras)
+        assert title_idx not in marks, "封面大标题被猜成标题了"
+
+        # 样本第一段必须还是那个空的「标题 3」（list_paragraphs 会跳过空段落，
+        # 所以要去原始 docx 里看）
+        assert Document(str(src)).paragraphs[0].style.name.startswith("Heading"), "样本构造错了"
+
+        # ② 层级要按文档实际编号体系排：一、=1 级，（一）=2 级，1.=3 级
+        by_text = {p.text.strip(): marks.get(p.index, 0) for p in paras if p.text.strip()}
+        assert by_text.get("一、引言") == 1, by_text.get("一、引言")
+        assert by_text.get("（一）问卷设计") == 2, by_text.get("（一）问卷设计")
+        assert by_text.get("1.样本构成") == 3, by_text.get("1.样本构成")
+
+        # ③ 自动定位：目录要落在封面之后、正文之前
+        out = toc_out / "封面残留_带目录.docx"
+        res = office.add_toc_to_docx(src, out, levels=3, marks=marks)
+        assert res["mode"] == "inserted", res
+
+        d = Document(str(out))
+        texts = [p.text.strip() for p in d.paragraphs]
+        i_toc = texts.index("目录")
+        i_title = next(i for i, t in enumerate(texts) if t == "调查研究报告")
+        i_body = next(i for i, t in enumerate(texts) if t == "一、引言")
+        assert i_title < i_toc < i_body, (i_title, i_toc, i_body)
+
+        # ④ 空的标题段落不许在目录里留一条「只有页码」的条目
+        toc_rows = [p.text for p in d.paragraphs if p.style.name.startswith("TOC ")]
+        assert toc_rows, "目录里一条都没有"
+        assert all(t.strip() for t in toc_rows), [t for t in toc_rows if not t.strip()]
+
+        # ⑤ 手动指定「文档最前面」要真的插到最前
+        front = toc_out / "封面残留_在最前.docx"
+        office.add_toc_to_docx(src, front, levels=3, marks=marks, anchor="start")
+        fd = Document(str(front))
+        assert fd.paragraphs[0].text.strip() == "目录", fd.paragraphs[0].text
+
+        return f"封面 {span} 段；目录在第 {i_toc} 段，封面 {i_title} → 正文 {i_body}"
+
     def outline_guess() -> str:
         plain = _plain_docx(toc_out / "手打标题.docx")
         assert len(toc.scan_headings(plain)) == 0, "这份文档不该有标题样式"
@@ -427,6 +528,7 @@ def main() -> int:
     check("Word 目录：插入目录且不动源文件", toc_insert)
     check("Word 目录：合并文档自动插目录", toc_merge)
     check("手动标标题：自动预判级别", outline_guess)
+    check("Word 目录：封面识别与插入位置", toc_cover)
     check("手动标标题：只写大纲级别，外观不变", outline_apply)
     check("手动标标题：标完能生成目录", toc_marks)
 
