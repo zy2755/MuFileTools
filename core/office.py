@@ -396,7 +396,6 @@ def merge_docx(segments, out_path: Path, *, dpi: int = 200, progress=None,
 # --------------------------------------------------------------------------- Word 目录
 
 # 动态派发下只能按位置传数值，所以这些常量必须写成数字
-_WD_STYLE_TITLE = -63           # wdStyleTitle
 _WD_ON = -1                     # ParagraphFormat.PageBreakBefore = True
 _WD_ALIGN_CENTER = 1            # wdAlignParagraphCenter
 _TOC_TITLE = "目录"
@@ -404,12 +403,39 @@ _COVER_STYLES = ("标题", "Title", "副标题", "Subtitle")
 _TOC_EMPTY_HINTS = ("未找到目录项", "No table of contents entries")
 
 
+def _wd_first_heading_pos(doc, *, scan: int = 400) -> int:
+    """返回第一个「正文标题」段落的起始字符位置；找不到返回 0。
+
+    判据用 OutlineLevel 而不是样式名：`wdOutlineLevel1..9` 是 1..9，正文是 10
+    （`wdOutlineLevelBodyText`）。这样「标题 1 / Heading 1 / 自定义大纲级别」都能认，
+    也不用去猜中文还是英文的样式名。
+
+    为什么用它当插入点，而不是量「封面块有多长」：
+    封面经常是手打的（正文样式 + 大字），根本没有 Title/Subtitle 样式，
+    按样式量长度会得到 0，于是目录被插到封面**前面**去（真实踩过）。
+    而「第一个正文标题之前」这个位置，无论封面多长、有没有样式，都天然是正文开头。
+    目录条目自己的样式是 TOC 1/2/3，OutlineLevel 是正文值，不会被误认成标题。
+    """
+    try:
+        count = int(doc.Paragraphs.Count)
+    except Exception:
+        return 0
+    for i in range(1, min(count, scan) + 1):
+        try:
+            p = doc.Paragraphs(i)
+            level = int(p.OutlineLevel)
+        except Exception:
+            break
+        if 1 <= level <= 9:
+            return int(p.Range.Start)
+    return 0
+
+
 def _wd_title_block_end(doc) -> int:
     """文档开头若是「标题 / 副标题」封面块，返回该块末尾的字符位置；否则返回 0。
 
-    直接把目录插在 Range(0,0) 会把封面大标题压到目录后面去，读者第一眼看到的是目录。
-    这里只认**开头连续**的 Title / Subtitle 段落 —— 注意「标题 1」不等于「标题」，
-    所以正文第一章不会被误当成封面块跳过。
+    只作兜底：正常人会用 `_wd_toc_anchor()`，它靠第一个正文标题定位。
+    这里留着是为了应付「封面用 Title 样式、正文却一个标题都没有」的文档。
     """
     try:
         count = int(doc.Paragraphs.Count)
@@ -428,10 +454,73 @@ def _wd_title_block_end(doc) -> int:
     return end
 
 
-def _wd_delete_tocs(doc) -> int:
-    """删掉已有目录，顺带删掉紧挨在目录前面那行「目录」标题。
+def _wd_toc_anchor(doc) -> int:
+    """算目录该插在哪个字符位置：优先「第一个正文标题之前」，兜底封面块末尾。"""
+    pos = _wd_first_heading_pos(doc)
+    if pos > 0:
+        return pos
+    return _wd_title_block_end(doc)
 
-    不删那行的话，同一份文档生成第二次就会出现两个「目录」。
+
+def _wd_is_toc_title_para(para) -> bool:
+    """判断一个段落是不是目录标题行（「目录」/「目 录」/「Contents」）。"""
+    try:
+        text = str(para.Range.Text).replace("\r", "").replace("\x07", "")
+    except Exception:
+        return False
+    flat = "".join(text.split())
+    if flat in ("目录", "目録", "Contents", "CONTENTS", "TableofContents"):
+        return True
+    try:
+        return "TOC" in str(para.Style.NameLocal).upper() and "标题" in str(para.Style.NameLocal)
+    except Exception:
+        return False
+
+
+def _wd_toc_entry_count(toc) -> int:
+    """数一个目录对象里有多少条目（空目录返回 0）。"""
+    try:
+        text = str(toc.Range.Text)
+    except Exception:
+        return 0
+    if any(hint in text for hint in _TOC_EMPTY_HINTS):
+        return 0
+    return text.count("\r")
+
+
+def _wd_update_existing_tocs(doc, levels: int) -> tuple[int, int]:
+    """把已有目录**就地**改成 1..levels 级，返回 (更新了几个, 第一个的条目数)。
+
+    只改两个属性 + Update()，不删不建：位置、缩进、字体、外面那层内容控件
+    一个都不碰。实测 WPS 生成的目录，start 全程停在 36 没动过，条目 51 → 23。
+
+    这是「文档本来就有目录」时的正确做法 —— 之前是删了重建，而重建的插入点
+    算错就会把目录怼到封面前面去，等于把人家排好的版又搞乱了。
+    """
+    try:
+        count = int(doc.TablesOfContents.Count)
+    except Exception:
+        return 0, 0
+
+    done = 0
+    entries = 0
+    for i in range(1, count + 1):
+        try:
+            toc = doc.TablesOfContents(i)
+            toc.UpperHeadingLevel = 1
+            toc.LowerHeadingLevel = levels
+            toc.Update()
+            done += 1
+            if i == 1:
+                entries = _wd_toc_entry_count(toc)
+        except Exception:
+            continue
+    return done, entries
+
+
+def _wd_delete_tocs(doc, *, keep_first: bool = False) -> int:
+    """删目录。keep_first=True 时只删第 2 个及以后的（重复生成的垃圾）。
+
     倒序删是为了不让前面的索引发生位移。
     """
     try:
@@ -439,8 +528,9 @@ def _wd_delete_tocs(doc) -> int:
     except Exception:
         return 0
 
+    lowest = 2 if keep_first else 1
     removed = 0
-    for i in range(count, 0, -1):
+    for i in range(count, lowest - 1, -1):
         try:
             toc = doc.TablesOfContents(i)
             start = int(toc.Range.Start)
@@ -456,10 +546,47 @@ def _wd_delete_tocs(doc) -> int:
     return removed
 
 
+def _wd_style_toc_heading(head, doc) -> None:
+    """把「目录」那一行设成目录标题样式（居中、醒目、且不会被收进目录自己里）。
+
+    为什么不用 Title / wdStyleTitle(-63)：Title 这个样式在不同模板里定义不一样，
+    WPS 做的模板就把它带上了大纲级别，于是刚生成的目录第一行会多一条「目录……I」
+    —— 目录把自己收进去了。实测踩过。
+
+    「TOC 标题」（内置名 TOC Heading）是 Word 专为这件事准备的样式，
+    既好看又保证不进目录；万一文档模板里没有这个样式，就退回手工排版。
+    """
+    for name in ("TOC Heading", "TOC 标题"):
+        try:
+            head.Style = doc.Styles(name)
+            break
+        except Exception:
+            continue
+    else:
+        try:
+            head.Range.Font.Bold = True
+            head.Range.Font.Size = 16          # 三号
+            head.Range.ParagraphFormat.Alignment = _WD_ALIGN_CENTER
+        except Exception:
+            pass
+
+    # 双保险：就算模板给的样式带大纲级别，也按正文级别处理，不进目录
+    try:
+        head.Range.ParagraphFormat.OutlineLevel = 10   # wdOutlineLevelBodyText
+    except Exception:
+        pass
+
+
 def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
                         page_break: bool = True,
-                        replace_existing: bool = True) -> tuple[int, int]:
-    """在已打开的 Word 文档里插一个原生目录，返回 (删掉的旧目录数, 新目录条目数)。
+                        replace_existing: bool = True) -> tuple[str, int, int]:
+    """在已打开的 Word 文档里弄出一个原生目录，返回 (模式, 删掉/更新的旧目录数, 条目数)。
+
+    两种模式，靠文档里**原来有没有目录**分流 —— 这是这件事的关键：
+
+    * ``"updated"``：原来就有目录（Word、WPS 生成的都算），**原地改深度 + 刷页码**。
+      位置、样式、外层内容控件全部不动。用户的排版是排过的，我们没有理由动它。
+    * ``"inserted"``：原来没目录，才找位置新建。
 
     分页一律用段落属性 PageBreakBefore，**不插分页符字符**：
     删旧目录时带不走分页符，位置又会随域刷新漂移，重复生成会一次多一页
@@ -469,17 +596,36 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
     目录里每条目都是一个超链接域，全文档刷域在大文档上明显更慢且没有收益。
     """
     levels = max(1, min(4, int(levels or 3)))
-    removed = _wd_delete_tocs(doc) if replace_existing else 0
 
-    pos = _wd_title_block_end(doc)
+    try:
+        existing = int(doc.TablesOfContents.Count)
+    except Exception:
+        existing = 0
+
+    # ---- 情况一：已经有目录 → 就地更新，位置一个字符都不动 ----
+    if existing >= 1:
+        if not replace_existing:
+            # 用户明确说别碰已有目录 → 原样留着，什么都不做
+            return "kept", 0, _wd_toc_entry_count(doc.TablesOfContents(1))
+        if existing > 1:
+            _wd_delete_tocs(doc, keep_first=True)      # 清掉重复生成的，只留第一个
+        updated, entries = _wd_update_existing_tocs(doc, levels)
+        doc.Repaginate()
+        if entries > 0:
+            return "updated", updated, entries
+        # 原来的目录已经是个空壳（标题样式全丢了），只能删掉重建
+
+    removed = _wd_delete_tocs(doc)
+
+    # ---- 情况二：没有目录 → 找位置新建 ----
+    pos = _wd_toc_anchor(doc)
     after_cover = pos > 0
 
     if with_title:
         doc.Range(pos, pos).InsertBefore(_TOC_TITLE + "\r")
         head = doc.Range(pos, pos + len(_TOC_TITLE))
+        _wd_style_toc_heading(head, doc)
         try:
-            head.Style = _WD_STYLE_TITLE
-            head.ParagraphFormat.Alignment = _WD_ALIGN_CENTER
             if after_cover:
                 head.ParagraphFormat.PageBreakBefore = _WD_ON   # 让封面单独一页
         except Exception:
@@ -518,15 +664,7 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
             pass
     doc.Repaginate()
 
-    try:
-        text = str(toc.Range.Text)
-    except Exception:
-        text = ""
-    if any(hint in text for hint in _TOC_EMPTY_HINTS):
-        entries = 0
-    else:
-        entries = text.count("\r")
-    return removed, entries
+    return "inserted", removed, _wd_toc_entry_count(toc)
 
 
 def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
@@ -579,7 +717,7 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
                                      "", False, "", "", 0, 0, True)
             if progress:
                 progress(2, 3, "生成目录并更新页码…")
-            removed, entries = _wd_insert_toc_into(
+            mode, removed, entries = _wd_insert_toc_into(
                 doc, levels, with_title=with_title,
                 page_break=page_break, replace_existing=replace_existing,
             )
@@ -609,8 +747,11 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
                     pass
 
     if progress:
-        progress(3, 3, f"完成：{out_path.name}（{entries} 条目录）")
-    return {"out": out_path, "entries": entries, "replaced": removed}
+        if mode == "updated":
+            progress(3, 3, f"完成：{out_path.name}（已就地更新原有目录，{entries} 条）")
+        else:
+            progress(3, 3, f"完成：{out_path.name}（新插入目录，{entries} 条）")
+    return {"out": out_path, "entries": entries, "replaced": removed, "mode": mode}
 
 
 def add_toc_to_docx_pydocx(src, out_path, *, levels: int = 3, with_title: bool = True,

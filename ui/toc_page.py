@@ -75,7 +75,13 @@ class _TocWorker(QThread):
                     self._src, self._out, progress=self._report, **self._opts
                 )
                 msg = f"{res['entries']} 条目录"
-                if res.get("replaced"):
+                if res.get("mode") == "updated":
+                    levels = int(self._opts.get("levels", 3))
+                    msg = (f"文档本来就有目录 —— 已在原位置就地更新为 1-{levels} 级"
+                           f"（{res['entries']} 条），位置和排版都没动")
+                elif res.get("mode") == "kept":
+                    msg = f"文档已有目录，按你的设置保持原样没动（{res['entries']} 条）"
+                elif res.get("replaced"):
                     msg += f"，替换了 {res['replaced']} 个旧目录"
                 self.done.emit(True, msg, str(res["out"]))
             else:
@@ -104,6 +110,7 @@ class TocPage(QWidget):
 
         self.src_path: str | None = None
         self._rows: list[tuple[int, str]] = []
+        self._has_toc = False          # 载入的文档里本来就有目录？
         self._worker: _TocWorker | None = None
         self._settings = QSettings("MuFileTools", "TocPage")
 
@@ -183,7 +190,7 @@ class TocPage(QWidget):
 
         self.opt_title = QCheckBox("在目录上方加一行「目录」标题")
         self.opt_break = QCheckBox("目录单独起页（正文从下一页开始）")
-        self.opt_replace = QCheckBox("替换文档里已有的目录")
+        self.opt_replace = QCheckBox("文档已有目录时就地更新（不挪位置）")
         self.opt_title.setChecked(True)
         self.opt_break.setChecked(True)
         self.opt_replace.setChecked(True)
@@ -288,14 +295,17 @@ class TocPage(QWidget):
         suffix = p.suffix.lower()
         if suffix not in toc.DOCX_EXTS:
             self._rows = []
+            self._has_toc = False
             self._refresh_view()
             self.warn(f"只支持 .docx（这是 {suffix or '无扩展名'}）。请在 Word 里「另存为」一份 .docx 再来。")
             return
 
         try:
             self._rows = toc.scan_headings(p)
+            self._has_toc = toc.has_toc(p)
         except Exception as exc:  # noqa: BLE001
             self._rows = []
+            self._has_toc = False
             self._refresh_view()
             self.warn(f"读不了这份文档：{exc}")
             return
@@ -306,11 +316,16 @@ class TocPage(QWidget):
         elif self._worker is None:
             depth = int(self.depth_box.currentData())
             count = sum(toc.level_counts(self._rows, depth).values())
-            self.notify(f"已载入 {p.name}：{count} 条标题将进入目录")
+            if self._has_toc:
+                self.notify(f"已载入 {p.name}：文档本来就有目录，"
+                            f"会在原位置就地更新成 {count} 条，位置不动")
+            else:
+                self.notify(f"已载入 {p.name}：文档没有目录，将新插入 {count} 条")
 
     def clear(self) -> None:
         self.src_path = None
         self._rows = []
+        self._has_toc = False
         self._refresh_view()
         self.notify("就绪 — 把一个 .docx 拖到窗口任意位置，或点「选择 Word…」")
 
@@ -360,9 +375,19 @@ class TocPage(QWidget):
 
         try:
             size_kb = p.stat().st_size / 1024
-            self.file_meta.setText(f"{size_kb:.1f} KB · 原文件只读不动，结果另存为「{p.stem}_带目录.docx」")
+            head = f"{size_kb:.1f} KB"
         except Exception:
-            self.file_meta.setText(f"结果另存为「{p.stem}_带目录.docx」")
+            head = ""
+        # 已有目录 / 没有目录，这两种情况的处理完全不同，得让人一眼看见
+        if self._has_toc:
+            mode_note = "文档已有目录 → 就地更新，位置和排版不动"
+        else:
+            mode_note = "文档没有目录 → 新插入一份"
+        self.file_meta.setText(
+            f"{head} · {mode_note} · 原文件只读不动，结果另存为「{p.stem}_带目录.docx」"
+            if head else
+            f"{mode_note} · 原文件只读不动，结果另存为「{p.stem}_带目录.docx」"
+        )
 
         counts = toc.level_counts(self._rows, depth)
         names = {1: "一级", 2: "二级", 3: "三级", 4: "四级"}

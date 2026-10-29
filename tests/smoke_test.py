@@ -227,15 +227,25 @@ def main() -> int:
         target = toc_out / "样例合同_带目录.docx"
         res = office.add_toc_to_docx(contract, target, levels=3)
         assert res["entries"] == 8, res
+        assert res["mode"] == "inserted", res        # 原文档没目录 → 走新建
         assert hashlib.md5(contract.read_bytes()).hexdigest() == before, "源文件被改动了！"
 
         d = Document(str(res["out"]))
         assert d.paragraphs[0].text.strip() == "目录", d.paragraphs[0].text
         assert "第 1 章 合同条款" in d.paragraphs[1].text, d.paragraphs[1].text[:60]
 
-        # 幂等：对已带目录的文档再跑一次，应替换旧目录而不是叠加
+        # 幂等：对已带目录的文档再跑一次，应**就地更新**旧目录而不是删了重建
+        # （重建要重新算插入点，一旦算错就会把目录挪到封面之前 —— 真实踩过的坑）
         again = office.add_toc_to_docx(res["out"], toc_out / "样例合同_再生成.docx", levels=3)
+        assert again["mode"] == "updated", again
         assert again["replaced"] == 1, again
+        assert again["entries"] == res["entries"], again     # 条目没变 = 没叠一份新的
+
+        d2 = Document(str(again["out"]))
+        assert d2.paragraphs[0].text.strip() == "目录", d2.paragraphs[0].text
+        assert "第 1 章 合同条款" in d2.paragraphs[1].text, d2.paragraphs[1].text[:60]
+        heads = sum(1 for p in d2.paragraphs if p.text.strip() == "目录")
+        assert heads == 1, f"出现了 {heads} 个「目录」行，应该只有 1 个"
 
         p1 = pymupdf.open(office.word_to_pdf(target, force=True))
         p2 = pymupdf.open(office.word_to_pdf(again["out"], force=True))
@@ -244,7 +254,7 @@ def main() -> int:
         p2.close()
         assert c1 == 5, c1
         assert c2 == 5, f"重复生成页数变了：{c2}"
-        return f"{res['entries']} 条目录，{c1} 页，重复生成不叠加"
+        return f"{res['entries']} 条目录，{c1} 页，重复生成就地更新不叠加"
 
     def toc_merge() -> str:
         plan = open_source(SAMPLES / "样例方案.docx")

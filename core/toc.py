@@ -130,3 +130,35 @@ def preview_lines(rows: list[tuple[int, str]], depth: int = 3, limit: int = 200)
             lines.append(f"…… 后面还有，只显示前 {limit} 条")
             break
     return lines
+
+
+# 目录域的特征：instrText 通常是 ' TOC \o "1-3" \h \z \u ' 这种形状。
+# 只认开头就是 TOC 的，避免正文里恰好提到这个词造成误判。
+_TOC_INSTR_RE = re.compile(r"^\s*TOC\b", re.IGNORECASE)
+
+
+def has_toc(path) -> bool:
+    """文档里是否已经有目录。
+
+    两种都算：Word 原生插入的 TOC 域，以及 WPS 那种把整个目录包在
+    <w:sdt> 内容控件里的写法 —— 后者在 OOXML 层面里面装的还是同一套 TOC 域，
+    所以遍历 instrText 就能一起认出来。
+
+    这个判断只影响界面上的提示文案和 core.office 的处理路径：
+    有目录 → 就地更新，位置不动；没目录 → 才新建。
+    """
+    try:
+        doc = Document(str(path))
+    except Exception:
+        return False
+    body = doc.element.body
+    try:
+        for node in body.iter(qn("w:instrText")):
+            if _TOC_INSTR_RE.search(node.text or ""):
+                return True
+        for node in body.iter(qn("w:fldSimple")):
+            if _TOC_INSTR_RE.search(node.get(qn("w:instr")) or ""):
+                return True
+    except Exception:
+        return False
+    return False
