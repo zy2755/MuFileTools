@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sys
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import ui.extract_page as ep  # noqa: E402
 import ui.ico_page as ip  # noqa: E402
 import ui.shell as mw  # noqa: E402
+import ui.toc_page as tp  # noqa: E402
 from ui.shell import MainWindow  # noqa: E402
 from ui.theme import QSS  # noqa: E402
 
@@ -104,17 +106,21 @@ def main() -> int:
     # 先快照真实配置，结束时原样还原（踩过一次：测试把 out_dir 写成了 out_gui）。
     from PySide6.QtCore import QSettings
 
-    real = QSettings("MuFileTools", "PageExtract")
-    snapshot = {k: real.value(k) for k in real.allKeys()}
+    namespaces = [("MuFileTools", "PageExtract"), ("MuFileTools", "TocPage")]
+    snapshots = {}
+    for org, app_name in namespaces:
+        store = QSettings(org, app_name)
+        snapshots[store] = {k: store.value(k) for k in store.allKeys()}
     try:
         return _run()
     finally:
-        for k in real.allKeys():
-            if k not in snapshot:
-                real.remove(k)
-        for k, v in snapshot.items():
-            real.setValue(k, v)
-        real.sync()
+        for store, snap in snapshots.items():
+            for k in store.allKeys():
+                if k not in snap:
+                    store.remove(k)
+            for k, v in snap.items():
+                store.setValue(k, v)
+            store.sync()
 
 
 def _run() -> int:
@@ -123,6 +129,7 @@ def _run() -> int:
     ep.QMessageBox = _FakeBox  # type: ignore[assignment]
     ip.QMessageBox = _FakeBox  # type: ignore[assignment]
     mw.QMessageBox = _FakeBox  # type: ignore[assignment]
+    tp.QMessageBox = _FakeBox  # type: ignore[assignment]
 
     app = QApplication(sys.argv)
     app.setStyleSheet(QSS)
@@ -134,7 +141,8 @@ def _run() -> int:
     page = win.extract_page
     expect(win.isVisible(), "窗口已创建")
     expect(win.windowTitle() == "小睦文件转换器", "窗口标题为「小睦文件转换器」", win.windowTitle())
-    expect(win.stack.count() == 2, "壳窗口包含 2 个工具页", f"count={win.stack.count()}")
+    expect(win.stack.count() == 3, "壳窗口包含 3 个工具页", f"count={win.stack.count()}")
+    expect(len(win._nav_buttons) == 3, "顶栏有 3 个导航按钮", f"{len(win._nav_buttons)}")
     expect(len(page.order) == 0, "初始队列为空")
 
     print("[2] 加入样例文件")
@@ -268,6 +276,38 @@ def _run() -> int:
         expect(heads[2].startswith("第 3 章 项目实施方案"), "第 3 页是「项目实施方案 第3章」", heads[2])
         pdf.close()
 
+    print("[7b] 合并 + 自动插入目录")
+    toc_dir = OUT / "toc_merge"
+    toc_dir.mkdir(parents=True, exist_ok=True)
+    page.out_dir.setText(str(toc_dir))
+    page.opt_toc.setChecked(True)
+    page.toc_depth.setCurrentIndex(page.toc_depth.findData(3))
+    page._sync_option_state()
+    expect(page.toc_row.isVisibleTo(page), "勾了合并后显示目录选项")
+    expect(page._build_spec().toc_levels == 3, "spec 带上 toc_levels=3",
+           str(page._build_spec().toc_levels))
+    page._start_export()
+    done = wait_until(app, lambda: page._export_worker is None and page.progress.value() == 100,
+                      300, "合并+目录完成")
+    expect(done, "合并+目录流程结束")
+    with_toc = list(toc_dir.glob("*.docx"))
+    expect(len(with_toc) == 1, "只生成 1 份带目录的 Word", f"{[f.name for f in with_toc]}")
+    if with_toc:
+        import pymupdf
+        from core.office import word_to_pdf
+        pdf = pymupdf.open(word_to_pdf(with_toc[0].resolve(), force=True))
+        expect(pdf.page_count == 4, "3 页正文 + 1 页目录 = 4 页", f"{pdf.page_count}")
+        first = pdf[0].get_text()
+        expect("目录" in first, "第 1 页是目录页", first[:40])
+        expect("第 2 章 合同条款" in first and "第 1 章 项目实施方案" in first,
+               "目录里收录了两章的标题", first[:120])
+        expect(pdf[1].get_text().strip().startswith("第 2 章 合同条款"), "第 2 页才是正文首页",
+               pdf[1].get_text()[:40])
+        pdf.close()
+    page.opt_toc.setChecked(False)
+    page.out_dir.setText(str(OUT))
+    page._sync_option_state()
+
     print("[8] 图片转 ICO 页签")
     win._switch(1)
     pump(app, 0.2)
@@ -291,7 +331,56 @@ def _run() -> int:
     pump(app, 0.2)
     expect(win.stack.currentWidget() is page, "切回页面提取")
 
-    print("[9] 移除与清空")
+    print("[9] Word 目录页签")
+    win._switch(2)
+    pump(app, 0.2)
+    expect(win.stack.currentWidget() is win.toc_page, "切换到 Word 目录页")
+    expect(win.btn_toc.isChecked() and not win.btn_extract.isChecked()
+           and not win.btn_ico.isChecked(), "三个导航按钮互斥选中正确")
+    tpage = win.toc_page
+    tpage.load_path(str(SAMPLES / "样例方案.docx"))
+    pump(app, 0.2)
+    expect(len(tpage._rows) == 6, "识别到 6 条标题", f"{len(tpage._rows)}")
+    expect("一级 3" in tpage.stat_label.text() and "二级 3" in tpage.stat_label.text(),
+           "统计文案正确", tpage.stat_label.text())
+    expect(tpage.btn_go.isEnabled(), "有标题时可生成")
+    expect(not tpage.warn_label.isVisibleTo(tpage), "有标题时不显示警告")
+
+    # 没有标题样式的文档 → 红字 + 主按钮禁用
+    from docx import Document as _Doc
+
+    plain = OUT / "无标题.docx"
+    plain_doc = _Doc()
+    plain_doc.add_paragraph("第一段普通正文，没有套标题样式。")
+    plain_doc.add_paragraph("第二段也一样。")
+    plain_doc.save(str(plain))
+    tpage.load_path(str(plain))
+    pump(app, 0.2)
+    expect(len(tpage._rows) == 0, "无标题文档扫到 0 条", f"{len(tpage._rows)}")
+    expect(not tpage.btn_go.isEnabled(), "无标题时主按钮禁用")
+    expect(tpage.warn_label.isVisibleTo(tpage), "无标题时显示红字提示")
+
+    # 非 docx 也拦住
+    tpage.load_path(str(SAMPLES / "样例报告.pdf"))
+    pump(app, 0.2)
+    expect(not tpage.btn_go.isEnabled(), "拖入 pdf 时主按钮禁用")
+
+    # 真生成（走同步入口，避开线程时序）
+    tpage.load_path(str(SAMPLES / "样例方案.docx"))
+    pump(app, 0.2)
+    src_md5 = hashlib.md5((SAMPLES / "样例方案.docx").read_bytes()).hexdigest()
+    res = tpage._generate_to(str(OUT / "样例方案_带目录.docx"))
+    expect(res["entries"] == 6, "生成 6 条目录", str(res.get("entries")))
+    expect(hashlib.md5((SAMPLES / "样例方案.docx").read_bytes()).hexdigest() == src_md5,
+           "源文件一个字节都没动")
+    chk = _Doc(str(res["out"]))
+    expect(chk.paragraphs[0].text.strip() == "目录", "首段是「目录」标题行",
+           chk.paragraphs[0].text)
+    expect("第 1 章" in chk.paragraphs[1].text, "次段是目录正文", chk.paragraphs[1].text[:40])
+    win._switch(0)
+    pump(app, 0.2)
+
+    print("[10] 移除与清空")
     page.file_list.setCurrentRow(0)
     page._remove_current()
     pump(app, 0.3)

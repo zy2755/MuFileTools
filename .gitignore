@@ -17,6 +17,12 @@ out_smoke/
 wheels/
 samples/
 
+# Android 构建产物与机器本地配置
+android/.gradle/
+android/.kotlin/
+android/local.properties
+dist_android/
+
 # 样例输出目录
 页面提取/
 

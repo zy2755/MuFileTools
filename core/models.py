@@ -45,6 +45,7 @@ class ExportSpec:
     long_image: bool = False         # 仅 png/jpg：把所选单位拼成一张长图
     merge_xlsx: bool = True          # 仅 xlsx：多张工作表合并进一个工作簿
     merge_docx: bool = True          # 仅 docx：跨文件合并成一份文档（且允许调顺序）
+    toc_levels: int = 0              # 仅 docx 合并：0=不插目录，1..4=目录收录到第几级标题
     overwrite: str = "rename"        # rename | skip | overwrite
     prefix: str = ""
     suffix: str = ""

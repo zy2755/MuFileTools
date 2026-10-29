@@ -273,12 +273,16 @@ def _wd_copy_page_setup(src_doc, dst_doc) -> None:
             pass
 
 
-def merge_docx(segments, out_path: Path, *, dpi: int = 200, progress=None) -> None:
+def merge_docx(segments, out_path: Path, *, dpi: int = 200, progress=None,
+               toc_levels: int | None = None) -> None:
     """把若干「页」原生拼成一份新的 .docx。
 
     segments 按输出顺序排列，每个元素二选一：
         ("word", Path, page_no)   Word 来源：按页取 Range，文字可选可编辑
         ("image", Path)           其它来源（PDF/PPT/Excel）：已经渲染好的整页 PNG
+
+    toc_levels 非空时，在保存前顺手插一个目录（1..4 = 收录到第几级标题）。
+    这里复用同一个 Word 会话，比"合并完再打开一次插目录"省一次冷启动。
 
     会打开本机 Word（隐藏），同一个会话里把所有源文档打开一次，逐页拼装。
     页眉页脚不在 Range 里，合并后统一用新文档的（一般就是没有）—— 这点在界面上说明了。
@@ -364,6 +368,11 @@ def merge_docx(segments, out_path: Path, *, dpi: int = 200, progress=None) -> No
                         except Exception:
                             pass
 
+            if toc_levels:
+                if progress:
+                    progress(total, total, "生成目录…")
+                _wd_insert_toc_into(new_doc, int(toc_levels))
+
             new_doc.SaveAs2(str(out_path), _WD_FORMAT_DOCX)
         finally:
             if new_doc is not None:
@@ -382,6 +391,336 @@ def merge_docx(segments, out_path: Path, *, dpi: int = 200, progress=None) -> No
                 except Exception:
                     pass
             pythoncom.CoUninitialize()
+
+
+# --------------------------------------------------------------------------- Word 目录
+
+# 动态派发下只能按位置传数值，所以这些常量必须写成数字
+_WD_STYLE_TITLE = -63           # wdStyleTitle
+_WD_ON = -1                     # ParagraphFormat.PageBreakBefore = True
+_WD_ALIGN_CENTER = 1            # wdAlignParagraphCenter
+_TOC_TITLE = "目录"
+_COVER_STYLES = ("标题", "Title", "副标题", "Subtitle")
+_TOC_EMPTY_HINTS = ("未找到目录项", "No table of contents entries")
+
+
+def _wd_title_block_end(doc) -> int:
+    """文档开头若是「标题 / 副标题」封面块，返回该块末尾的字符位置；否则返回 0。
+
+    直接把目录插在 Range(0,0) 会把封面大标题压到目录后面去，读者第一眼看到的是目录。
+    这里只认**开头连续**的 Title / Subtitle 段落 —— 注意「标题 1」不等于「标题」，
+    所以正文第一章不会被误当成封面块跳过。
+    """
+    try:
+        count = int(doc.Paragraphs.Count)
+    except Exception:
+        return 0
+    end = 0
+    for i in range(1, min(count, 8) + 1):
+        try:
+            name = str(doc.Paragraphs(i).Style.NameLocal)
+        except Exception:
+            break
+        if name in _COVER_STYLES:
+            end = int(doc.Paragraphs(i).Range.End)
+            continue
+        break
+    return end
+
+
+def _wd_delete_tocs(doc) -> int:
+    """删掉已有目录，顺带删掉紧挨在目录前面那行「目录」标题。
+
+    不删那行的话，同一份文档生成第二次就会出现两个「目录」。
+    倒序删是为了不让前面的索引发生位移。
+    """
+    try:
+        count = int(doc.TablesOfContents.Count)
+    except Exception:
+        return 0
+
+    removed = 0
+    for i in range(count, 0, -1):
+        try:
+            toc = doc.TablesOfContents(i)
+            start = int(toc.Range.Start)
+            toc.Delete()
+            removed += 1
+            if start <= 0:
+                continue
+            prev = doc.Range(max(0, start - 1), start).Paragraphs(1)
+            if str(prev.Range.Text).strip() == _TOC_TITLE:
+                prev.Range.Delete()
+        except Exception:
+            continue
+    return removed
+
+
+def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
+                        page_break: bool = True,
+                        replace_existing: bool = True) -> tuple[int, int]:
+    """在已打开的 Word 文档里插一个原生目录，返回 (删掉的旧目录数, 新目录条目数)。
+
+    分页一律用段落属性 PageBreakBefore，**不插分页符字符**：
+    删旧目录时带不走分页符，位置又会随域刷新漂移，重复生成会一次多一页
+    （实测 4 页 → 5 页 → 6 页）。段落属性不占字符，天然幂等。
+
+    更新只调 TablesOfContents(...).Update()，不调 doc.Fields.Update() ——
+    目录里每条目都是一个超链接域，全文档刷域在大文档上明显更慢且没有收益。
+    """
+    levels = max(1, min(4, int(levels or 3)))
+    removed = _wd_delete_tocs(doc) if replace_existing else 0
+
+    pos = _wd_title_block_end(doc)
+    after_cover = pos > 0
+
+    if with_title:
+        doc.Range(pos, pos).InsertBefore(_TOC_TITLE + "\r")
+        head = doc.Range(pos, pos + len(_TOC_TITLE))
+        try:
+            head.Style = _WD_STYLE_TITLE
+            head.ParagraphFormat.Alignment = _WD_ALIGN_CENTER
+            if after_cover:
+                head.ParagraphFormat.PageBreakBefore = _WD_ON   # 让封面单独一页
+        except Exception:
+            pass
+        pos += len(_TOC_TITLE) + 1
+
+    toc = doc.TablesOfContents.Add(
+        doc.Range(pos, pos),   # Range：插入点
+        True,                  # UseHeadingStyles：按标题样式建目录
+        1,                     # UpperHeadingLevel
+        levels,                # LowerHeadingLevel
+        False,                 # UseFields：False = 用标题样式，不是 TC 域
+        "",                    # TableID
+        True,                  # RightAlignPageNumbers
+        True,                  # IncludePageNumbers
+        "",                    # AddedStyles
+        True,                  # UseHyperlinks → 域里带 \h，Ctrl+点击可跳转
+        False,                 # HidePageNumbersInWeb
+        False,                 # UseOutlineLevels：只认标题样式
+    )
+
+    if page_break:
+        try:
+            end = int(toc.Range.End)
+            if end < int(doc.Content.End):
+                doc.Range(end, end).ParagraphFormat.PageBreakBefore = _WD_ON   # 正文另起一页
+        except Exception:
+            pass
+
+    try:
+        toc.Update()
+    except Exception:
+        try:
+            doc.TablesOfContents(1).Update()
+        except Exception:
+            pass
+    doc.Repaginate()
+
+    try:
+        text = str(toc.Range.Text)
+    except Exception:
+        text = ""
+    if any(hint in text for hint in _TOC_EMPTY_HINTS):
+        entries = 0
+    else:
+        entries = text.count("\r")
+    return removed, entries
+
+
+def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
+                    page_break: bool = True, replace_existing: bool = True,
+                    progress=None) -> dict:
+    """复制一份 src 到 out_path，在**副本**里插目录 —— 源文件不参与任何写入。
+
+    为什么用「复制文件 → 改副本」而不是「只读打开 → FormattedText 复制」：
+    后者会丢页眉页脚和分节设置，而页码就住在页脚里，目录的页码依赖它。
+    复制是最快的「零损失」办法（批注、修订、自定义属性也一并保住）。
+
+    返回 {"out": Path, "entries": int, "replaced": int}
+    """
+    import pythoncom
+    import win32com.client as win32
+
+    src, out_path = Path(src), Path(out_path)
+    if not src.is_file():
+        raise RuntimeError(f"文件不存在：{src}")
+    if src.suffix.lower() != ".docx":
+        raise RuntimeError(f"只支持 .docx（这是 {src.suffix or '无扩展名'}），请先在 Word 里另存为 .docx。")
+    if not has_word():
+        raise RuntimeError("没检测到 Microsoft Word，算不出目录页码。")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+    if progress:
+        progress(0, 3, "复制源文件…")
+    shutil.copy2(src, out_path)          # 源文件一个字节都不动
+
+    with _COM_LOCK:
+        pythoncom.CoInitialize()
+        app = doc = None
+        ok = False
+        try:
+            if progress:
+                progress(1, 3, "启动 Word…")
+            app = win32.DispatchEx("Word.Application")
+            app.Visible = False
+            app.DisplayAlerts = 0
+            try:
+                app.Options.UpdateLinksAtOpen = False
+            except Exception:
+                pass
+            # 12 个参数固定按位置：FileName, ConfirmConversions, ReadOnly, AddToRecentFiles,
+            # PasswordDocument, PasswordTemplate, Revert, WritePasswordDocument,
+            # WritePasswordTemplate, Format, Encoding, Visible
+            doc = app.Documents.Open(str(out_path), False, False, False, "",
+                                     "", False, "", "", 0, 0, True)
+            if progress:
+                progress(2, 3, "生成目录并更新页码…")
+            removed, entries = _wd_insert_toc_into(
+                doc, levels, with_title=with_title,
+                page_break=page_break, replace_existing=replace_existing,
+            )
+            if entries <= 0:
+                raise RuntimeError(
+                    "这份文档没有可识别的标题样式，Word 只会插出一个空目录。\n"
+                    "请先把章节标题套上「标题 1 / 2 / 3」样式，再试一次。"
+                )
+            doc.Save()
+            ok = True
+        finally:
+            if doc is not None:
+                try:
+                    doc.Close(SaveChanges=0)
+                except Exception:
+                    pass
+            if app is not None:
+                try:
+                    app.Quit(SaveChanges=0)
+                except Exception:
+                    pass
+            pythoncom.CoUninitialize()
+            if not ok:
+                try:
+                    out_path.unlink()        # 失败别留下半成品
+                except Exception:
+                    pass
+
+    if progress:
+        progress(3, 3, f"完成：{out_path.name}（{entries} 条目录）")
+    return {"out": out_path, "entries": entries, "replaced": removed}
+
+
+def add_toc_to_docx_pydocx(src, out_path, *, levels: int = 3, with_title: bool = True,
+                           page_break: bool = True, progress=None) -> dict:
+    """没有 Word 时的退路：直接写 TOC 域代码，并在 settings 里开 updateFields。
+
+    **实测：Word 打开时不会自动更新这个域**，用户得手动 Ctrl+A → F9。
+    所以界面必须如实说明，不能承诺「打开就有目录」。
+
+    返回 {"out": Path, "entries": -1, "needs_update": True}
+    """
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    src, out_path = Path(src), Path(out_path)
+    if not src.is_file():
+        raise RuntimeError(f"文件不存在：{src}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    levels = max(1, min(4, int(levels or 3)))
+
+    if progress:
+        progress(0, 2, "写入目录域…")
+    doc = Document(str(src))             # 只读 src，写的是 out_path
+    first = doc.paragraphs[0] if doc.paragraphs else None
+
+    def new_para():
+        # 都插在同一个锚点前，后插的会紧贴锚点，所以顺序天然正确
+        if first is not None:
+            return first.insert_paragraph_before()
+        return doc.add_paragraph()
+
+    def run_with(para, el):
+        run = para.add_run()
+        run._r.append(el)
+        return run
+
+    if with_title:
+        head = new_para()
+        try:
+            head.style = doc.styles["Title"]
+        except Exception:
+            pass
+        head.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        head.add_run(_TOC_TITLE)
+
+    holder = new_para()
+
+    begin = OxmlElement("w:fldChar")
+    begin.set(qn("w:fldCharType"), "begin")
+    begin.set(qn("w:dirty"), "true")       # dirty 挂在 begin 上，某些版本会认
+    run_with(holder, begin)
+
+    instr = OxmlElement("w:instrText")
+    instr.set(qn("xml:space"), "preserve")  # 不设的话前后空格会被吃掉，域代码就废了
+    instr.text = f' TOC \\o "1-{levels}" \\h \\z \\u '
+    run_with(holder, instr)
+
+    sep = OxmlElement("w:fldChar")
+    sep.set(qn("w:fldCharType"), "separate")
+    run_with(holder, sep)
+
+    # 域结果先填扫到的标题（用软换行，仍在一个段落里）：这样就算用户不按 F9，
+    # 打开也能看到目录内容；按了 F9 就变成带点线和页码的正式目录。
+    try:
+        from . import toc as toc_mod
+
+        rows = toc_mod.scan_headings(src)[:80]
+    except Exception:
+        rows = []
+    if rows:
+        result = holder.add_run()
+        for i, (level, text) in enumerate(rows):
+            if i:
+                result.add_break()                       # 软换行
+            result.add_text("　　" * (level - 1) + text)  # 全角空格缩进表现层级
+    else:
+        holder.add_run("（打开后按 Ctrl+A、F9 生成目录）")
+
+    end = OxmlElement("w:fldChar")
+    end.set(qn("w:fldCharType"), "end")
+    run_with(holder, end)
+
+    if page_break:
+        holder.add_run().add_break(WD_BREAK.PAGE)
+
+    # settings.xml 有固定的元素顺序要求，updateFields 必须落在 compat 之前
+    try:
+        settings_el = doc.settings.element
+        update = OxmlElement("w:updateFields")
+        update.set(qn("w:val"), "true")
+        anchor = None
+        for tag in ("w:hdrShapeDefaults", "w:footnotePr", "w:endnotePr",
+                    "w:compat", "w:docVars", "w:rsids"):
+            found = settings_el.find(qn(tag))
+            if found is not None:
+                anchor = found
+                break
+        if anchor is not None:
+            anchor.addprevious(update)
+        else:
+            settings_el.append(update)
+    except Exception:
+        pass
+
+    doc.save(str(out_path))
+    if progress:
+        progress(2, 2, f"完成：{out_path.name}")
+    return {"out": out_path, "entries": -1, "needs_update": True}
 
 
 def _soffice_convert(src: Path, out_pdf: Path, kind: str) -> None:

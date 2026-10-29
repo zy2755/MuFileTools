@@ -192,13 +192,17 @@ def run_merge(pages: list[PageRef], spec: ExportSpec, progress=None) -> list[Pat
                 if progress:
                     progress(total + min(done, all_), total * 2, msg)
 
-            office.merge_docx(segs, target, progress=report)
+            office.merge_docx(segs, target, progress=report,
+                              toc_levels=spec.toc_levels or None)
         else:
             blocks: list[list[Image.Image]] = []
             for i, p in enumerate(pages, start=1):
                 blocks.append(p.source.render(p.key, spec.dpi))
                 _tick(progress, i, total, f"排版 {p.doc_name} · {p.label}")
             _build_docx(blocks, target, title="合并文档")
+            if spec.toc_levels:
+                _tick(progress, total, total,
+                      "未检测到 Word：页图模式没有标题样式，已跳过目录")
     finally:
         for png in tmp_pngs:
             try:

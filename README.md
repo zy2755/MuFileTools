@@ -1,13 +1,14 @@
 # 小睦文件转换器 · MuFileTools
 
-一个 Windows 桌面小工具集合，目前集成两个功能：
+一个 Windows 桌面小工具集合，目前集成三个功能：
 
 | 工具 | 功能 |
 | --- | --- |
 | **页面提取** | 从 **PDF / Word / PPT** 里挑出指定的页，从 **Excel** 里挑出指定的工作表，一次导出成**图片**或**文件**；多份 Word 还能**按任意顺序合并成一份** |
 | **图片转 ICO** | 把 JPG / PNG 等图片变成 Windows `.ico` 图标：圆角实时预览，一键导出七档尺寸 |
+| **Word 目录** | 拖入一个 `.docx`，在正文前插入 **Word 原生目录**（1–4 级标题，可 Ctrl+点击跳转）；原文件不动，另存为副本 |
 
-界面基于 PySide6，顶部一键切换两个工具。
+界面基于 PySide6，顶部一键切换三个工具。
 
 ---
 
@@ -80,6 +81,37 @@ python main.py
 
 ---
 
+## 工具三：Word 目录
+
+### 使用步骤
+
+1. 把 `.docx` 拖到窗口任意位置（或点「选择 Word…」）；
+2. 左侧显示文件名和识别到的标题条数，右侧列出大纲预览 —— **先确认标题对不对**。
+   一条都没扫到时界面会红字提示并禁用按钮，而不是让 Word 插一个空目录出来；
+3. 选目录收录层级（1 级 / 1-2 / 1-3 / 1-4），三个开关默认全开：
+   「加一行『目录』标题」「目录单独起页」「替换文档里已有的目录」；
+4. 点「生成带目录的 Word」，输出到源文件同目录，叫「原名_带目录.docx」。
+
+### 说明
+
+- 生成的是 **Word 原生目录域**（`TOC \o "1-3" \h`），不是手工排的文字：
+  在 Word 里按 F9 或右键「更新域」就能重算页码，条目也能 Ctrl+点击跳转。
+- **目录会不会收录，取决于文档有没有用「标题 1/2/3」样式**。手工加粗放大的"标题"
+  Word 不认识，请先在 Word 里套用标题样式。界面上的标题预览就是用来确认这一点的。
+- **原文件一个字节都不动**：内部是复制一份再改副本（顺带保住页眉页脚、批注、修订）。
+- 已有目录的文档再生成一次，会**替换**旧目录（连那行「目录」标题一起），不会叠加。
+- 文档开头如果是「标题 / 副标题」样式的封面，目录会插在封面之后，封面单独一页。
+- 一次只处理一份；拖多份进来会提示逐个来。
+
+### 与「页面提取」的合并 Word 联动
+
+在「页面提取」里勾了「多份文档合并为一个 Word」时，下面会多出一个
+**「合并后自动插入目录」**（带 1/1-2/1-3/1-4 级别下拉），勾上就一次搞定合并 + 目录。
+
+> 目录会额外占一页，正文页码整体后移 —— 这是正常的。
+
+---
+
 ## 项目结构
 
 ```
@@ -91,14 +123,16 @@ app_icon.ico            程序图标
 core/
   models.py             Unit / ExportSpec / Job 等数据模型 + 支持的文件类型
   sources.py            PdfSource / WordSource / PptSource / ExcelSource，统一 open/units/thumbnail/render/export
-  office.py             Office COM 桥接（Word/PPT→PDF、Excel 单表转 PDF/另存、PPT 删页另存、Word 按页取 Range 合并）、缓存与降级
+  office.py             Office COM 桥接（Word/PPT→PDF、Excel 单表转 PDF/另存、PPT 删页另存、Word 按页取 Range 合并、插入目录）、缓存与降级
+  toc.py                标题静态扫描（纯 python-docx，不启动 Word）+ 层级统计 + 大纲预览
   exporter.py           图片 / PDF / DOCX / XLSX / PPTX 五种导出器 + 长图拼接 + 命名冲突处理
   iconizer.py           ICO 生成核心逻辑（纯 Pillow：读取/正方形化/圆角/打包七档尺寸）
 ui/
-  shell.py              主窗口壳：品牌栏 + 「页面提取 / 图片转 ICO」切换 + 拖放路由
+  shell.py              主窗口壳：品牌栏 + 三个工具切换 + 拖放路由
   dnd.py                全局文件拖放：应用级事件过滤器 + 松手前的悬停提示层
   extract_page.py       页面提取工具页（三栏界面、导出顺序条、拖放兜底、导出编排）
   ico_page.py           图片转 ICO 工具页（滑杆实时预览、导出）
+  toc_page.py           Word 目录工具页（标题预览、级别选择、生成进度）
   state.py              DocEntry 状态、Loader 与 Thumbnailer 后台线程
   widgets.py            单位卡片、缩略图网格、大图预览
   theme.py              浅色 / 深色两套调色板 + QSS 模板 + 标题栏配色
@@ -108,9 +142,8 @@ tools/
   make_exe_icon.py      重新生成 app_icon.ico
   fetch_wheels.py       弱网环境分片下载 wheel 再离线安装
 tests/
-  smoke_test.py         18 项无界面自测（解析→导出→回读校验）
-  gui_smoke.py          离屏界面测试：勾选联动、导出顺序、合并 Word 端到端
-  gui_smoke.py          离屏启动 GUI 的冒烟测试（含 ICO 工具页）
+  smoke_test.py         21 项无界面自测（解析→导出→回读校验）
+  gui_smoke.py          离屏界面测试：勾选联动、导出顺序、合并 Word、目录页端到端
   test_iconizer.py      ICO 核心算法 + 界面冒烟测试
 docs/
   设计说明.md            需求拆解、技术选型理由、架构、导出矩阵、已知限制
@@ -151,7 +184,7 @@ docs/
 ## 运行环境
 
 - Windows 10/11，Python 3.10+（本机验证 3.13）
-- **页面提取建议安装 Microsoft Office**：Word / PPT 的分页、Excel 工作表的渲染都依赖它
+- **页面提取 / Word 目录都建议安装 Microsoft Office**：Word / PPT 的分页、Excel 工作表的渲染、目录的页码计算都依赖它
 - 没有 Office 时：Excel 仍可用「另存 xlsx」（走 openpyxl，图表/图片不保留）；Word / PPT 无法确定分页；装了 LibreOffice 可作 Word/PPT→PDF 的备选引擎
 - PPT 导出「PowerPoint 演示文稿」必须装 PowerPoint（要靠它删页另存），只装 LibreOffice 不行
 - 图片转 ICO 只需 Pillow，无任何系统依赖
@@ -160,10 +193,9 @@ docs/
 
 ```powershell
 python tools/make_samples.py
-python tests/smoke_test.py     # 18 项：四种来源 × 各导出格式，回读校验页数/尺寸/表名/幻灯片数
-python tests/gui_smoke.py      # 离屏界面测试：勾选、调顺序、合并 Word 后回读校验页序
+python tests/smoke_test.py     # 21 项：四种来源 × 各导出格式 + Word 目录，回读校验页数/尺寸/表名/幻灯片数
+python tests/gui_smoke.py      # 离屏界面测试：勾选、调顺序、合并 Word、生成目录后回读校验
 python tests/test_iconizer.py  # ICO 算法 + 界面冒烟
-python tests/gui_smoke.py      # 离屏启动界面，检查信号与状态流转（含工具切换）
 ```
 
 ## 打包成 exe（可选）
@@ -201,6 +233,16 @@ Qt 语言包 6.7 MB、TLS 后端、TIFF 格式插件等），详见 spec 内注�
 
 **合并 Word 需要装 Word 吗？** 想要「文字可选可编辑」的效果就必须装（要借 Word 的排版和范围复制）。
 没装 Word 时这个功能仍然可用，只是整份退化成「页图排版」——每页渲成图片贴进 A4 文档，视觉一致但文字不能选。
+
+**生成的目录是空的 / 我明明有标题？** 目录只认 Word 的**标题样式**（标题 1/2/3），
+手工把段落加粗、放大字号 Word 是不认的。请先在 Word 里给章节标题套用标题样式 ——
+本工具页左上的大纲预览就是用来事先确认的：预览里没有，生成的目录里也不会有。
+
+**生成目录后正文页码变了？** 正常。目录额外占一页，正文整体后移一页，目录里的页码也是按新位置算的。
+另外多节文档（每节单独编号）会出现重复页码，这是 Word 的原生行为，不是 bug。
+
+**目录页和「页面提取」的合并能一起做吗？** 可以。在「页面提取」里勾「多份文档合并为一个 Word」，
+下面就会出现「合并后自动插入目录」，一次完成。合并用的是同一个 Word 会话，不会多开一次。
 
 **Excel 导出报"未检测到 Microsoft Excel"？** 出图依赖 Excel 打印引擎。可以先装 Office，或改用「Excel 工作簿」格式导出（底层走 openpyxl，不需要 Office）。
 

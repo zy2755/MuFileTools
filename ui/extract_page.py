@@ -288,6 +288,28 @@ class ExtractPage(QWidget):
         rv.addWidget(self.opt_merge)
         rv.addWidget(self.opt_merge_docx)
 
+        # 合并后自动加目录：只对 docx 且勾了「合并」时才有意义，所以做成它的子项
+        self.opt_toc = QCheckBox("合并后自动插入目录")
+        self.opt_toc.setToolTip(
+            "在最前面插入一整页 Word 原生目录（1–4 级标题，可 Ctrl+点击跳转）。\n"
+            "正文页码会整体后移，这是正常的。\n"
+            "需要文档里的章节标题套了「标题 1 / 2 / 3」样式，否则目录会是空的。"
+        )
+        self.toc_depth = QComboBox()
+        self.toc_depth.setFixedWidth(96)
+        for label, value in (("1 级", 1), ("1-2 级", 2), ("1-3 级", 3), ("1-4 级", 4)):
+            self.toc_depth.addItem(label, value)
+        self.toc_depth.setCurrentIndex(2)                       # 默认 1-3 级
+        self.opt_toc.toggled.connect(lambda _v: self.toc_depth.setEnabled(self.opt_toc.isChecked()))
+        self.toc_row = QWidget()
+        toc_lay = QHBoxLayout(self.toc_row)
+        toc_lay.setContentsMargins(22, 0, 0, 0)                 # 缩进 = 从属于上面那个勾选
+        toc_lay.setSpacing(8)
+        toc_lay.addWidget(self.opt_toc, 1)
+        toc_lay.addWidget(self.toc_depth)
+        rv.addWidget(self.toc_row)
+        self.opt_merge_docx.toggled.connect(lambda _v: self._sync_option_state())
+
         rv.addWidget(self._tag("输出目录"))
         dir_row = QHBoxLayout()
         dir_row.setSpacing(6)
@@ -457,6 +479,10 @@ class ExtractPage(QWidget):
         self.opt_long.setChecked(s.value("long_image", "false") in (True, "true"))
         self.opt_merge.setChecked(s.value("merge_xlsx", "true") in (True, "true"))
         self.opt_merge_docx.setChecked(s.value("merge_docx", "true") in (True, "true"))
+        self.opt_toc.setChecked(s.value("toc_after_merge", "false") in (True, "true"))
+        toc_depth = int(s.value("toc_depth", 3))
+        j = self.toc_depth.findData(max(1, min(4, toc_depth)))
+        self.toc_depth.setCurrentIndex(j if j >= 0 else 2)
         self._sync_option_state()
 
     def _save_settings(self) -> None:
@@ -468,6 +494,8 @@ class ExtractPage(QWidget):
         s.setValue("long_image", "true" if self.opt_long.isChecked() else "false")
         s.setValue("merge_xlsx", "true" if self.opt_merge.isChecked() else "false")
         s.setValue("merge_docx", "true" if self.opt_merge_docx.isChecked() else "false")
+        s.setValue("toc_after_merge", "true" if self.opt_toc.isChecked() else "false")
+        s.setValue("toc_depth", int(self.toc_depth.currentData()))
         s.setValue("prefix", self.prefix.text())
         s.setValue("suffix", self.suffix.text())
 
@@ -479,6 +507,9 @@ class ExtractPage(QWidget):
         self.opt_long.setVisible(is_img)
         self.opt_merge.setVisible(fmt == "xlsx")
         self.opt_merge_docx.setVisible(fmt == "docx")
+        self.toc_row.setVisible(fmt == "docx" and self.opt_merge_docx.isChecked())
+        # 深度下拉只有在「自动插入目录」勾上时才有意义
+        self.toc_depth.setEnabled(self.opt_toc.isChecked())
         if hasattr(self, "summary"):
             self._refresh_counts()
 
@@ -795,14 +826,20 @@ class ExtractPage(QWidget):
             self.out_dir.setText(folder)
 
     def _build_spec(self) -> ExportSpec:
+        fmt = self.fmt_box.currentData()
         return ExportSpec(
-            fmt=self.fmt_box.currentData(),
+            fmt=fmt,
             out_dir=Path(self.out_dir.text().strip() or (Path.home() / "页面提取")),
             dpi=int(self.dpi_box.currentData()),
             jpg_quality=self.jpg_quality.value(),
             long_image=self.opt_long.isChecked(),
             merge_xlsx=self.opt_merge.isChecked(),
             merge_docx=self.opt_merge_docx.isChecked(),
+            toc_levels=(
+                int(self.toc_depth.currentData())
+                if (fmt == "docx" and self.opt_toc.isChecked() and self.opt_merge_docx.isChecked())
+                else 0
+            ),
             prefix=self.prefix.text().strip(),
             suffix=self.suffix.text().strip(),
         )

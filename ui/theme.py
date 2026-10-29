@@ -47,6 +47,7 @@ _LIGHT = {
     "tip_text": "#ffffff",
     "menu_bg": "#ffffff",
     "menu_sel": "#eef3fe",
+    "danger": "#c0392b",          # 警示文字（红）
 }
 
 _DARK = {
@@ -78,6 +79,7 @@ _DARK = {
     "tip_text": "#f0f4fa",
     "menu_bg": "#242a34",
     "menu_sel": "#2f4a72",
+    "danger": "#ff8b80",          # 深色下要提亮，否则压不住深底
 }
 
 PALETTES = {MODE_LIGHT: _LIGHT, MODE_DARK: _DARK}
@@ -152,6 +154,15 @@ QLabel#Thumb {{
     border-radius: 8px;
 }}
 QLabel#Placeholder {{ color: {muted}; font-size: 14px; }}
+QLabel#FileName {{
+    background: {surface_alt};
+    border: 1px solid {border};
+    border-radius: 8px;
+    color: {text};
+    font-size: 15px;
+    font-weight: 600;
+}}
+QLabel#Warn {{ color: {danger}; font-weight: 600; }}
 
 /* ---------- 按钮 ---------- */
 QPushButton {{

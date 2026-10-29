@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sys
 import time
@@ -15,11 +16,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pymupdf  # noqa: E402
+from docx import Document  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from core.exporter import run_jobs  # noqa: E402
-from core.models import ExportSpec, Job  # noqa: E402
+from core import office, toc  # noqa: E402
+from core.exporter import run_jobs, run_merge  # noqa: E402
+from core.models import ExportSpec, Job, PageRef  # noqa: E402
 from core.sources import open_source  # noqa: E402
 
 OUT = ROOT / "out_smoke"
@@ -204,6 +207,71 @@ def main() -> int:
         assert n == 2, f"子集里应有 2 页，实际 {n}"
         return f"{n} 页幻灯片 {files[0].stat().st_size // 1024} KB"
 
+    # ---------------------------------------------------------------- Word 目录
+    toc_out = OUT / "toc"
+    contract = SAMPLES / "样例合同.docx"
+
+    def toc_scan() -> str:
+        rows = toc.scan_headings(SAMPLES / "样例方案.docx")
+        counts = toc.level_counts(rows)
+        assert len(rows) == 6, rows
+        assert counts == {1: 3, 2: 3, 3: 0}, counts
+        rows2 = toc.scan_headings(contract)
+        assert len(rows2) == 8, rows2
+        lines = toc.preview_lines(rows2, depth=2)
+        assert any("└" in ln for ln in lines), lines       # 二级要缩进
+        return f"方案 6 条 {counts}；合同 8 条"
+
+    def toc_insert() -> str:
+        before = hashlib.md5(contract.read_bytes()).hexdigest()
+        target = toc_out / "样例合同_带目录.docx"
+        res = office.add_toc_to_docx(contract, target, levels=3)
+        assert res["entries"] == 8, res
+        assert hashlib.md5(contract.read_bytes()).hexdigest() == before, "源文件被改动了！"
+
+        d = Document(str(res["out"]))
+        assert d.paragraphs[0].text.strip() == "目录", d.paragraphs[0].text
+        assert "第 1 章 合同条款" in d.paragraphs[1].text, d.paragraphs[1].text[:60]
+
+        # 幂等：对已带目录的文档再跑一次，应替换旧目录而不是叠加
+        again = office.add_toc_to_docx(res["out"], toc_out / "样例合同_再生成.docx", levels=3)
+        assert again["replaced"] == 1, again
+
+        p1 = pymupdf.open(office.word_to_pdf(target, force=True))
+        p2 = pymupdf.open(office.word_to_pdf(again["out"], force=True))
+        c1, c2 = p1.page_count, p2.page_count
+        p1.close()
+        p2.close()
+        assert c1 == 5, c1
+        assert c2 == 5, f"重复生成页数变了：{c2}"
+        return f"{res['entries']} 条目录，{c1} 页，重复生成不叠加"
+
+    def toc_merge() -> str:
+        plan = open_source(SAMPLES / "样例方案.docx")
+        cont = open_source(contract)
+        try:
+            pages = [
+                PageRef(plan, "p1", "第 1 页", "样例方案.docx"),
+                PageRef(cont, "p2", "第 2 页", "样例合同.docx"),
+                PageRef(plan, "p3", "第 3 页", "样例方案.docx"),
+            ]
+            files = run_merge(pages, spec("docx", toc_levels=3))
+            pdf = pymupdf.open(office.word_to_pdf(files[0].resolve(), force=True))
+            try:
+                pages_n = pdf.page_count
+                first = pdf[0].get_text()
+                second = pdf[1].get_text().strip()
+                assert pages_n == 4, pages_n                      # 3 页正文 + 1 页目录
+                assert "第 2 章 合同条款" in first, first[:150]
+                assert "第 1 章 项目实施方案" in first, first[:150]
+                assert second.startswith("第 1 章 项目实施方案"), second[:40]   # 正文页序没变
+                return f"{pages_n} 页（首页目录，正文页序不变）"
+            finally:
+                pdf.close()
+        finally:
+            plan.close()
+            cont.close()
+
     check("PDF  缩略图", pdf_thumb)
     check("PDF  → PNG（非连续页 p1/p3/p5）", pdf_png)
     check("PDF  → JPG（三页拼长图）", pdf_jpg_long)
@@ -222,6 +290,9 @@ def main() -> int:
     check("PPT  → PNG", ppt_png)
     check("PPT  → PDF（保留矢量文字）", ppt_pdf)
     check("PPT  → PPTX（所选幻灯片子集）", ppt_pptx)
+    check("Word 目录：静态扫描标题样式", toc_scan)
+    check("Word 目录：插入目录且不动源文件", toc_insert)
+    check("Word 目录：合并文档自动插目录", toc_merge)
 
     print("\n" + "=" * 64)
     ok = sum(1 for r in _results if r[0])

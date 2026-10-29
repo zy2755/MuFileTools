@@ -22,11 +22,13 @@ from PySide6.QtWidgets import (
 
 from core.iconizer import IMAGE_EXTS
 from core.models import SUPPORTED_EXTS
+from core.toc import DOCX_EXTS as TOC_EXTS
 from ui import settings
 from ui import theme as theme_mod
 from ui.dnd import FileDropRouter, collect_by_ext
 from ui.extract_page import ExtractPage
 from ui.ico_page import IcoPage
+from ui.toc_page import TocPage
 
 APP_NAME = "小睦文件转换器"
 
@@ -43,6 +45,7 @@ class MainWindow(QMainWindow):
 
         self.extract_page = ExtractPage()
         self.ico_page = IcoPage()
+        self.toc_page = TocPage()
 
         self._build_ui()
         self._build_menu()
@@ -77,20 +80,23 @@ class MainWindow(QMainWindow):
         brand = QLabel(APP_NAME)
         brand.setObjectName("Brand")
         bl.addWidget(brand)
-        brand_sub = QLabel("多格式文档提取 · 图片转 ICO")
+        brand_sub = QLabel("多格式文档提取 · 图片转 ICO · Word 目录")
         brand_sub.setObjectName("Muted")
         bl.addWidget(brand_sub)
         bl.addStretch(1)
 
         self.btn_extract = self._nav_button("页面提取")
         self.btn_ico = self._nav_button("图片转 ICO")
-        self.btn_extract.setCheckable(True)
-        self.btn_ico.setCheckable(True)
+        self.btn_toc = self._nav_button("Word 目录")
+        self._nav_buttons = [self.btn_extract, self.btn_ico, self.btn_toc]
+        for btn in self._nav_buttons:
+            btn.setCheckable(True)
         self.btn_extract.setChecked(True)
         self.btn_extract.clicked.connect(lambda: self._switch(0))
         self.btn_ico.clicked.connect(lambda: self._switch(1))
-        bl.addWidget(self.btn_extract)
-        bl.addWidget(self.btn_ico)
+        self.btn_toc.clicked.connect(lambda: self._switch(2))
+        for btn in self._nav_buttons:
+            bl.addWidget(btn)
 
         # 外观切换
         self.btn_theme = QPushButton()
@@ -105,6 +111,7 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.extract_page)
         self.stack.addWidget(self.ico_page)
+        self.stack.addWidget(self.toc_page)
         outer.addWidget(self.stack, 1)
 
     def _nav_button(self, text: str) -> QPushButton:
@@ -115,8 +122,9 @@ class MainWindow(QMainWindow):
 
     def _switch(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
-        self.btn_extract.setChecked(index == 0)
-        self.btn_ico.setChecked(index == 1)
+        # 按列表统一置位：以后再加页面不用回来改这里（原来写死 0/1，第三个按钮永远不高亮）
+        for i, btn in enumerate(self._nav_buttons):
+            btn.setChecked(i == index)
 
     def _build_menu(self) -> None:
         bar = self.menuBar()
@@ -202,10 +210,23 @@ class MainWindow(QMainWindow):
     def _on_extract_page(self) -> bool:
         return self.stack.currentWidget() is self.extract_page
 
+    def _on_toc_page(self) -> bool:
+        return self.stack.currentWidget() is self.toc_page
+
     def _drop_hint(self, raw_paths: list[str]) -> tuple[str, str]:
         """悬停提示：松手之前就告诉用户会发生什么。"""
         docs = collect_by_ext(raw_paths, SUPPORTED_EXTS)
         imgs = collect_by_ext(raw_paths, IMAGE_EXTS)
+        tocable = collect_by_ext(raw_paths, TOC_EXTS)
+
+        if self._on_toc_page():
+            if tocable:
+                if len(tocable) > 1:
+                    return f"松手为第 1 份文档生成目录（共 {len(tocable)} 份）", "目录一次只处理一份，其余的可以逐个来"
+                return "松手就为这份 Word 生成目录", "原文件不动，另存为「原名_带目录.docx」"
+            if docs:
+                return "这些文档不是 .docx", "Word 目录只认 .docx，.doc / .rtf 请先在 Word 里另存"
+            return "这些文件不支持", "Word 目录只认 .docx 文档"
 
         if self._on_extract_page():
             if docs:
@@ -228,6 +249,14 @@ class MainWindow(QMainWindow):
         """松手后按当前页分流。两种文件都拖进来时，先处理本页能用的。"""
         docs = collect_by_ext(raw_paths, SUPPORTED_EXTS)
         imgs = collect_by_ext(raw_paths, IMAGE_EXTS)
+        tocable = collect_by_ext(raw_paths, TOC_EXTS)
+
+        if self._on_toc_page():
+            if tocable:
+                self.toc_page.add_paths(tocable)
+                return
+            self.toc_page.notify("这里只认 .docx：老的 .doc / .rtf 请先在 Word 里另存为 .docx 再拖进来")
+            return
 
         if self._on_extract_page():
             if docs:
@@ -270,7 +299,8 @@ class MainWindow(QMainWindow):
             f"{APP_NAME} (MuFileTools)\n\n"
             "· 页面提取：PDF / Word / PPT 按页提取，Excel 按工作表提取，\n"
             "  可存为 PNG / JPG / PDF / Word / Excel / PowerPoint。\n"
-            "· 图片转 ICO：圆角实时预览，一键导出七档尺寸的 .ico 图标。\n\n"
+            "· 图片转 ICO：圆角实时预览，一键导出七档尺寸的 .ico 图标。\n"
+            "· Word 目录：为 .docx 一键插入原生目录（1–4 级标题），原文件不动。\n\n"
             "渲染引擎：PyMuPDF + Microsoft Office（未安装时降级 LibreOffice / openpyxl）\n"
             "图标引擎：Pillow（逐档缩放 + 抗锯齿圆角）",
         )
@@ -280,6 +310,7 @@ class MainWindow(QMainWindow):
         if router is not None:
             router.detach()
         self.extract_page.shutdown()
+        self.toc_page.shutdown()
         super().closeEvent(event)
 
 
