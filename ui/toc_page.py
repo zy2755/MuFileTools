@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtGui import QTextOption          # Qt6 把它挪到 QtGui 了，QtCore 里没有
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -216,6 +217,10 @@ class TocPage(QWidget):
         self.preview.setObjectName("Log")
         self.preview.setReadOnly(True)
         self.preview.setMinimumHeight(110)
+        # 右侧面板窄，长标题（「2.1.1 校园闲置经济市场规模」这种）一换行就散成两行，
+        # 缩进层级也跟着乱。改成不折行 + 横向滚动，一行一条看得清。
+        self.preview.setWordWrapMode(QTextOption.WrapMode.NoWrap)
+        self.preview.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.preview.setPlaceholderText("载入文档后，这里列出识别到的章节目录")
         rv.addWidget(self.preview, 1)
         body.addWidget(right, 2)
@@ -313,6 +318,8 @@ class TocPage(QWidget):
         self._refresh_view()
         if not self._rows:
             self.warn(NO_TITLE_HINT)
+            # 状态行也要刷 —— 否则换一份没标题的文档时，底下还挂着上一份的「已载入…」
+            self.notify(f"已载入 {p.name}：没有识别到标题样式，生成不了目录")
         elif self._worker is None:
             depth = int(self.depth_box.currentData())
             count = sum(toc.level_counts(self._rows, depth).values())
