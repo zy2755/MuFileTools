@@ -213,7 +213,9 @@ class TocPage(QWidget):
         stat_row.addWidget(stat_sec)
         stat_row.addStretch(1)
         self.btn_mark = QPushButton("手动标标题…")
-        self.btn_mark.setMinimumWidth(132)      # 窄了会被压成「手动标标题...」
+        # 文字本身以省略号结尾（表示「点开会继续」），别当成被截断的提示去加宽度。
+        # 实测 sizeHint 只要 106px，给它一个下限防止窄面板挤压即可。
+        self.btn_mark.setMinimumWidth(106)
         self.btn_mark.setToolTip(
             "文档里的标题是手打的、没套标题样式？自己指认哪些行是几级标题。\n"
             "只记大纲级别，字体字号颜色一个都不会变。"
