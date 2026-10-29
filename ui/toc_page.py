@@ -15,8 +15,10 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtGui import QTextOption          # Qt6 把它挪到 QtGui 了，QtCore 里没有
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -29,12 +31,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core import office, toc
+from core import office, outline, toc
 from core.exporter import _unique
+from ui.mark_dialog import MarkDialog
 
 NO_TITLE_HINT = (
-    "这份文档没有使用「标题 1 / 2 / 3」样式，Word 只会插出一个空目录。\n"
-    "请先在 Word 里把章节标题套上标题样式，或用「页面提取」把页面导成图片。"
+    "没有识别到标题样式，Word 只会插一个空目录。\n"
+    "点右上角的「手动标标题…」自己挑出章节（字体字号一个都不会变），"
+    "或者先在 Word 里把章节标题套上「标题 1 / 2 / 3」样式。"
 )
 
 
@@ -60,11 +64,12 @@ class _TocWorker(QThread):
     progress = Signal(int, int, str)
     done = Signal(bool, str, str)          # ok, 消息, 输出路径
 
-    def __init__(self, src: str, out: str, opts: dict, parent=None):
+    def __init__(self, src: str, out: str, opts: dict, rows: list | None = None, parent=None):
         super().__init__(parent)
         self._src = src
         self._out = out
         self._opts = dict(opts)
+        self._rows = list(rows or [])
 
     def _report(self, done: int, total: int, msg: str) -> None:
         self.progress.emit(done, total, msg)
@@ -87,6 +92,7 @@ class _TocWorker(QThread):
                 self.done.emit(True, msg, str(res["out"]))
             else:
                 plain = {k: v for k, v in self._opts.items() if k != "replace_existing"}
+                plain["rows"] = self._rows or None   # 手动标记的结果要填进域结果里
                 res = office.add_toc_to_docx_pydocx(
                     self._src, self._out, progress=self._report, **plain
                 )
@@ -112,6 +118,8 @@ class TocPage(QWidget):
         self.src_path: str | None = None
         self._rows: list[tuple[int, str]] = []
         self._has_toc = False          # 载入的文档里本来就有目录？
+        self._marks: dict[int, int] = {}   # 手动标的 {段落下标: 级别}
+        self._edited = False           # 这份文档的标题是不是手动标的
         self._worker: _TocWorker | None = None
         self._settings = QSettings("MuFileTools", "TocPage")
 
@@ -198,9 +206,22 @@ class TocPage(QWidget):
         for box in (self.opt_title, self.opt_break, self.opt_replace):
             rv.addWidget(box)
 
+        stat_row = QHBoxLayout()
+        stat_row.setSpacing(6)
         stat_sec = QLabel("识别到的标题")
         stat_sec.setObjectName("Section")
-        rv.addWidget(stat_sec)
+        stat_row.addWidget(stat_sec)
+        stat_row.addStretch(1)
+        self.btn_mark = QPushButton("手动标标题…")
+        self.btn_mark.setMinimumWidth(132)      # 窄了会被压成「手动标标题...」
+        self.btn_mark.setToolTip(
+            "文档里的标题是手打的、没套标题样式？自己指认哪些行是几级标题。\n"
+            "只记大纲级别，字体字号颜色一个都不会变。"
+        )
+        self.btn_mark.setEnabled(False)
+        self.btn_mark.clicked.connect(self.open_mark_dialog)
+        stat_row.addWidget(self.btn_mark)
+        rv.addLayout(stat_row)
         self.stat_label = QLabel("还没有载入文档")
         self.stat_label.setObjectName("Muted")
         rv.addWidget(self.stat_label)
@@ -297,6 +318,8 @@ class TocPage(QWidget):
     def load_path(self, path: str) -> None:
         p = Path(path)
         self.src_path = str(p)
+        self._marks = {}
+        self._edited = False
         suffix = p.suffix.lower()
         if suffix not in toc.DOCX_EXTS:
             self._rows = []
@@ -319,7 +342,7 @@ class TocPage(QWidget):
         if not self._rows:
             self.warn(NO_TITLE_HINT)
             # 状态行也要刷 —— 否则换一份没标题的文档时，底下还挂着上一份的「已载入…」
-            self.notify(f"已载入 {p.name}：没有识别到标题样式，生成不了目录")
+            self.notify(f"已载入 {p.name}：没有识别到标题样式 —— 点「手动标标题…」自己挑出章节")
         elif self._worker is None:
             depth = int(self.depth_box.currentData())
             count = sum(toc.level_counts(self._rows, depth).values())
@@ -333,6 +356,8 @@ class TocPage(QWidget):
         self.src_path = None
         self._rows = []
         self._has_toc = False
+        self._marks = {}
+        self._edited = False
         self._refresh_view()
         self.notify("就绪 — 把一个 .docx 拖到窗口任意位置，或点「选择 Word…」")
 
@@ -347,6 +372,55 @@ class TocPage(QWidget):
     def _clear_warn(self) -> None:
         self.warn_label.clear()
         self.warn_label.hide()
+
+    # ------------------------------------------------------------------ 手动标标题
+    def open_mark_dialog(self) -> None:
+        """打开段落清单，让人自己指认哪一行是几级标题。
+
+        第一次打开会自动猜一遍（core.outline.guess_levels），之后每次打开
+        沿用上次的结果 —— 改完深度想再生成一次时，不用重新标。
+        """
+        if not self.src_path:
+            return
+        p = Path(self.src_path)
+        if p.suffix.lower() not in toc.DOCX_EXTS:
+            self.warn("手动标标题只支持 .docx。")
+            return
+        if self._worker is not None:
+            return
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            paras = outline.list_paragraphs(p)
+        except Exception as exc:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            self.warn(f"读不了这份文档：{exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if not paras:
+            self.warn("这份文档里没有可标记的文字段落（可能是扫描件或整页图片）。")
+            return
+
+        marks = dict(self._marks)
+        if not marks:
+            marks = outline.guess_levels(paras)      # 头一次打开才自动猜
+
+        dlg = MarkDialog(paras, marks, p.name, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return                                    # 取消就保持原样，不动之前的标记
+
+        self._marks = dlg.marks()
+        self._rows = dlg.marked_rows()
+        self._edited = True
+        self._refresh_view()
+
+        count = len(self._rows)
+        if count:
+            self.notify(f"已手动标记 {count} 条标题 —— 点「生成带目录的 Word」")
+        else:
+            self.warn("一条标题都没标记。点「手动标标题…」挑出章节，或干脆套用 Word 的标题样式。")
 
     # ------------------------------------------------------------------ 刷新
     def _on_depth_changed(self) -> None:
@@ -366,6 +440,7 @@ class TocPage(QWidget):
             self.preview.clear()
             self._clear_warn()
             self.btn_go.setEnabled(False)
+            self.btn_mark.setEnabled(False)
             self._repolish(self.file_label)
             return
 
@@ -374,11 +449,13 @@ class TocPage(QWidget):
 
         if self._rows:
             self.file_label.setObjectName("FileName")
-            self.file_label.setText(f"{p.name}\n\n{len(self._rows)} 条标题")
+            note = "（手动标记）" if self._edited else ""
+            self.file_label.setText(f"{p.name}\n\n{len(self._rows)} 条标题{note}")
         else:
             self.file_label.setObjectName("Placeholder")
             self.file_label.setText(f"{p.name}\n\n没有识别到标题样式")
         self._repolish(self.file_label)
+        self.btn_mark.setEnabled(True)
 
         try:
             size_kb = p.stat().st_size / 1024
@@ -398,11 +475,13 @@ class TocPage(QWidget):
 
         counts = toc.level_counts(self._rows, depth)
         names = {1: "一级", 2: "二级", 3: "三级", 4: "四级"}
-        self.stat_label.setText(
-            " · ".join(f"{names[i]} {counts[i]} 个" for i in counts)
-            if self._rows
-            else "0 条（这份文档没有用标题样式）"
-        )
+        if self._rows:
+            self.stat_label.setText(
+                " · ".join(f"{names[i]} {counts[i]} 个" for i in counts)
+                + ("　← 手动标记" if self._edited else "")
+            )
+        else:
+            self.stat_label.setText("0 条 —— 点右边的「手动标标题…」自己挑出章节")
 
         lines = toc.preview_lines(self._rows, depth)
         self.preview.setPlainText("\n".join(lines) if lines else "（空）")
@@ -439,6 +518,7 @@ class TocPage(QWidget):
             "with_title": self.opt_title.isChecked(),
             "page_break": self.opt_break.isChecked(),
             "replace_existing": self.opt_replace.isChecked(),
+            "marks": dict(self._marks),
         }
 
     def _generate_to(self, out_path: str) -> dict:
@@ -452,6 +532,7 @@ class TocPage(QWidget):
         if office.has_word():
             return office.add_toc_to_docx(self.src_path, out_path, **opts)
         plain = {k: v for k, v in opts.items() if k != "replace_existing"}
+        plain["rows"] = self._rows or None
         return office.add_toc_to_docx_pydocx(self.src_path, out_path, **plain)
 
     def generate(self) -> None:
@@ -476,7 +557,7 @@ class TocPage(QWidget):
         self.btn_go.setText("生成中…")
         self.notify(f"正在处理 {Path(self.src_path).name}…")
 
-        self._worker = _TocWorker(self.src_path, str(target), self._opts(), self)
+        self._worker = _TocWorker(self.src_path, str(target), self._opts(), self._rows, self)
         self._worker.progress.connect(lambda _d, _t, msg: self.notify(msg))
         self._worker.done.connect(self._on_done)
         self._worker.finished.connect(self._on_worker_finished)

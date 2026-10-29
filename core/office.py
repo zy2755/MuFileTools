@@ -488,14 +488,41 @@ def _wd_toc_entry_count(toc) -> int:
     return text.count("\r")
 
 
-def _wd_update_existing_tocs(doc, levels: int) -> tuple[int, int]:
+def _wd_ensure_outline_flag(toc) -> bool:
+    """确保目录域里带 ``\\u``（按大纲级别收录）。改过域代码返回 True。
+
+    为什么改域代码而不设属性：``TableOfContents.UseOutlineLevels`` 是**只读**的，
+    赋值直接抛 AttributeError（实测），所以 ``toc.UseOutlineLevels = True``
+    这种写法一直在 try/except 里静默失败 —— 等于没写。
+
+    手动标记过的段落没有标题样式、只有大纲级别，域里不带 ``\\u`` 就一条都收不进去。
+    Word 和 WPS 自己插的目录默认都带，这条是给「老目录 + 补标」兜底的。
+    """
+    try:
+        field = toc.Range.Fields(1)
+        code = str(field.Code.Text)
+    except Exception:
+        return False
+    if "\\u" in code:
+        return False
+    try:
+        field.Code.Text = code.rstrip() + " \\u "
+        return True
+    except Exception:
+        return False
+
+
+def _wd_update_existing_tocs(doc, levels: int, *, use_outline: bool = False) -> tuple[int, int]:
     """把已有目录**就地**改成 1..levels 级，返回 (更新了几个, 第一个的条目数)。
 
-    只改两个属性 + Update()，不删不建：位置、缩进、字体、外面那层内容控件
+    只改几个属性 + Update()，不删不建：位置、缩进、字体、外面那层内容控件
     一个都不碰。实测 WPS 生成的目录，start 全程停在 36 没动过，条目 51 → 23。
 
     这是「文档本来就有目录」时的正确做法 —— 之前是删了重建，而重建的插入点
     算错就会把目录怼到封面前面去，等于把人家排好的版又搞乱了。
+
+    use_outline=True 时额外让域代码带上「使用大纲级别」：手动标记过的段落没有
+    标题样式，只有大纲级别，不打开这个选项目录里就看不到它们。
     """
     try:
         count = int(doc.TablesOfContents.Count)
@@ -507,6 +534,8 @@ def _wd_update_existing_tocs(doc, levels: int) -> tuple[int, int]:
     for i in range(1, count + 1):
         try:
             toc = doc.TablesOfContents(i)
+            if use_outline:
+                _wd_ensure_outline_flag(toc)   # 只读属性改不了，只能改域代码
             toc.UpperHeadingLevel = 1
             toc.LowerHeadingLevel = levels
             toc.Update()
@@ -579,7 +608,8 @@ def _wd_style_toc_heading(head, doc) -> None:
 
 def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
                         page_break: bool = True,
-                        replace_existing: bool = True) -> tuple[str, int, int]:
+                        replace_existing: bool = True,
+                        use_outline: bool = False) -> tuple[str, int, int]:
     """在已打开的 Word 文档里弄出一个原生目录，返回 (模式, 删掉/更新的旧目录数, 条目数)。
 
     两种模式，靠文档里**原来有没有目录**分流 —— 这是这件事的关键：
@@ -587,6 +617,10 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
     * ``"updated"``：原来就有目录（Word、WPS 生成的都算），**原地改深度 + 刷页码**。
       位置、样式、外层内容控件全部不动。用户的排版是排过的，我们没有理由动它。
     * ``"inserted"``：原来没目录，才找位置新建。
+
+    ``use_outline=True`` 时目录改成「以大纲级别为准」（域代码多一个 ``\\u``）。
+    手动标记的段落没有标题样式、只有大纲级别，必须开这个开关才收得进去；
+    对纯标题样式的文档没有副作用 —— 标题样式自带的大纲级别本来就在收录范围内。
 
     分页一律用段落属性 PageBreakBefore，**不插分页符字符**：
     删旧目录时带不走分页符，位置又会随域刷新漂移，重复生成会一次多一页
@@ -609,7 +643,7 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
             return "kept", 0, _wd_toc_entry_count(doc.TablesOfContents(1))
         if existing > 1:
             _wd_delete_tocs(doc, keep_first=True)      # 清掉重复生成的，只留第一个
-        updated, entries = _wd_update_existing_tocs(doc, levels)
+        updated, entries = _wd_update_existing_tocs(doc, levels, use_outline=use_outline)
         doc.Repaginate()
         if entries > 0:
             return "updated", updated, entries
@@ -644,7 +678,7 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
         "",                    # AddedStyles
         True,                  # UseHyperlinks → 域里带 \h，Ctrl+点击可跳转
         False,                 # HidePageNumbersInWeb
-        False,                 # UseOutlineLevels：只认标题样式
+        bool(use_outline),     # UseOutlineLevels：手动标记过的段落靠它收录
     )
 
     if page_break:
@@ -669,14 +703,19 @@ def _wd_insert_toc_into(doc, levels: int, *, with_title: bool = True,
 
 def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
                     page_break: bool = True, replace_existing: bool = True,
-                    progress=None) -> dict:
+                    marks: dict | None = None, progress=None) -> dict:
     """复制一份 src 到 out_path，在**副本**里插目录 —— 源文件不参与任何写入。
 
     为什么用「复制文件 → 改副本」而不是「只读打开 → FormattedText 复制」：
     后者会丢页眉页脚和分节设置，而页码就住在页脚里，目录的页码依赖它。
     复制是最快的「零损失」办法（批注、修订、自定义属性也一并保住）。
 
-    返回 {"out": Path, "entries": int, "replaced": int}
+    marks 是「手动标标题」的结果 {段落下标: 级别}：复制完先用 python-docx
+    把大纲级别写进副本（只写 <w:outlineLvl>，不动样式和字体），再让 Word 打开。
+    之所以不用 Word 的 Paragraphs(i) 去对号：python-docx 的 paragraphs 不含
+    表格内段落，两边下标根本对不上，会标错行。
+
+    返回 {"out": Path, "entries": int, "replaced": int, "mode": str}
     """
     import pythoncom
     import win32com.client as win32
@@ -693,8 +732,19 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
     if out_path.exists():
         out_path.unlink()
     if progress:
-        progress(0, 3, "复制源文件…")
+        progress(0, 4, "复制源文件…")
     shutil.copy2(src, out_path)          # 源文件一个字节都不动
+
+    if marks:
+        if progress:
+            progress(1, 4, "写入标题级别…")
+        from docx import Document
+
+        from . import outline as outline_mod
+
+        py_doc = Document(str(out_path))     # 这是副本，源文件仍然没被碰
+        outline_mod.apply_levels_to_doc(py_doc, marks)
+        py_doc.save(str(out_path))
 
     with _COM_LOCK:
         pythoncom.CoInitialize()
@@ -702,7 +752,7 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
         ok = False
         try:
             if progress:
-                progress(1, 3, "启动 Word…")
+                progress(2, 4, "启动 Word…")
             app = win32.DispatchEx("Word.Application")
             app.Visible = False
             app.DisplayAlerts = 0
@@ -716,15 +766,16 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
             doc = app.Documents.Open(str(out_path), False, False, False, "",
                                      "", False, "", "", 0, 0, True)
             if progress:
-                progress(2, 3, "生成目录并更新页码…")
+                progress(3, 4, "生成目录并更新页码…")
             mode, removed, entries = _wd_insert_toc_into(
                 doc, levels, with_title=with_title,
                 page_break=page_break, replace_existing=replace_existing,
+                use_outline=bool(marks),
             )
             if entries <= 0:
                 raise RuntimeError(
                     "这份文档没有可识别的标题样式，Word 只会插出一个空目录。\n"
-                    "请先把章节标题套上「标题 1 / 2 / 3」样式，再试一次。"
+                    "请先把章节标题套上「标题 1 / 2 / 3」样式，或用「手动标标题」挑出章节，再试一次。"
                 )
             doc.Save()
             ok = True
@@ -748,18 +799,22 @@ def add_toc_to_docx(src, out_path, *, levels: int = 3, with_title: bool = True,
 
     if progress:
         if mode == "updated":
-            progress(3, 3, f"完成：{out_path.name}（已就地更新原有目录，{entries} 条）")
+            progress(4, 4, f"完成：{out_path.name}（已就地更新原有目录，{entries} 条）")
         else:
-            progress(3, 3, f"完成：{out_path.name}（新插入目录，{entries} 条）")
+            progress(4, 4, f"完成：{out_path.name}（新插入目录，{entries} 条）")
     return {"out": out_path, "entries": entries, "replaced": removed, "mode": mode}
 
 
 def add_toc_to_docx_pydocx(src, out_path, *, levels: int = 3, with_title: bool = True,
-                           page_break: bool = True, progress=None) -> dict:
+                           page_break: bool = True, marks: dict | None = None,
+                           rows: list | None = None, progress=None) -> dict:
     """没有 Word 时的退路：直接写 TOC 域代码，并在 settings 里开 updateFields。
 
     **实测：Word 打开时不会自动更新这个域**，用户得手动 Ctrl+A → F9。
     所以界面必须如实说明，不能承诺「打开就有目录」。
+
+    marks 给的是手动标记的 {段落下标: 级别}，会先写进文档再写域；
+    rows 是已经排好序的 [(级别, 文本)]，用来填域结果（不传就自己扫一遍）。
 
     返回 {"out": Path, "entries": -1, "needs_update": True}
     """
@@ -777,6 +832,10 @@ def add_toc_to_docx_pydocx(src, out_path, *, levels: int = 3, with_title: bool =
     if progress:
         progress(0, 2, "写入目录域…")
     doc = Document(str(src))             # 只读 src，写的是 out_path
+    if marks:
+        from . import outline as outline_mod
+
+        outline_mod.apply_levels_to_doc(doc, marks)
     first = doc.paragraphs[0] if doc.paragraphs else None
 
     def new_para():
@@ -817,12 +876,14 @@ def add_toc_to_docx_pydocx(src, out_path, *, levels: int = 3, with_title: bool =
 
     # 域结果先填扫到的标题（用软换行，仍在一个段落里）：这样就算用户不按 F9，
     # 打开也能看到目录内容；按了 F9 就变成带点线和页码的正式目录。
-    try:
-        from . import toc as toc_mod
+    if rows is None:
+        try:
+            from . import toc as toc_mod
 
-        rows = toc_mod.scan_headings(src)[:80]
-    except Exception:
-        rows = []
+            rows = toc_mod.scan_headings(src)
+        except Exception:
+            rows = []
+    rows = list(rows or [])[:80]
     if rows:
         result = holder.add_run()
         for i, (level, text) in enumerate(rows):

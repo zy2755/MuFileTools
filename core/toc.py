@@ -100,11 +100,32 @@ def scan_headings(path: str | Path, max_level: int = MAX_LEVEL) -> list[tuple[in
         text = (p.text or "").strip()
         if not text:
             continue
+        try:
+            if is_toc_style(str(p.style.name or "")):
+                continue            # 目录自己的一行，不算标题
+        except Exception:
+            pass
         level = level_of(p)
         if level is None or level > max_level:
             continue
         rows.append((level, text))
     return rows
+
+
+# 目录条目所在的段落：Word / WPS 都会套上 "TOC 1"~"TOC 9" 或「目录 1」这类样式。
+# 这些段落必须从「可标记的行」里剔掉 —— 否则用户会在清单里看到
+# 「1 项目简介............2」这种目录自己的一行，标错还会把目录塞进目录里。
+_TOC_STYLE_RE = re.compile(r"^(?:toc|目录)\s*[1-9]$", re.IGNORECASE)
+
+
+def is_toc_style(name: str) -> bool:
+    """样式名是不是目录条目 / 目录标题（"TOC 1"、"目录 2"、"TOC Heading"）。"""
+    flat = (name or "").strip()
+    if not flat:
+        return False
+    if _TOC_STYLE_RE.match(flat):
+        return True
+    return flat.lower() in ("toc heading", "toc 标题", "目录标题")
 
 
 def level_counts(rows: list[tuple[int, str]], depth: int = 3) -> dict[int, int]:

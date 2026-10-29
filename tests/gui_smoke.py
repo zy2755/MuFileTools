@@ -377,6 +377,73 @@ def _run() -> int:
     expect(chk.paragraphs[0].text.strip() == "目录", "首段是「目录」标题行",
            chk.paragraphs[0].text)
     expect("第 1 章" in chk.paragraphs[1].text, "次段是目录正文", chk.paragraphs[1].text[:40])
+
+    print("[9b] 手动标标题")
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    from core import outline as _outline
+    from ui.mark_dialog import MarkDialog
+
+    hand = OUT / "手打标题.docx"
+    hd = _Doc()
+    cover = hd.add_paragraph()
+    cover.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cr = cover.add_run("手打大标题")
+    cr.bold = True
+    cr.font.size = Pt(22)
+    for lv, txt in ((1, "1 项目简介"), (2, "1.1 项目介绍"), (3, "1.1.1 平台定位"),
+                    (0, "正文内容" * 20)):
+        para = hd.add_paragraph()
+        run = para.add_run(txt)
+        if lv:
+            run.bold = True
+            run.font.size = Pt({1: 16, 2: 14, 3: 12}[lv])
+    hd.save(str(hand))
+
+    tpage.load_path(str(hand))
+    pump(app, 0.2)
+    expect(len(tpage._rows) == 0, "手打标题的文档扫到 0 条", f"{len(tpage._rows)}")
+    expect(tpage.btn_mark.isEnabled(), "「手动标标题」按钮可用")
+    expect(not tpage.btn_go.isEnabled(), "没标题时主按钮仍禁用")
+
+    paras = _outline.list_paragraphs(hand)
+    guessed = _outline.guess_levels(paras)
+    expect(len(guessed) >= 3, "自动预判出标题", f"{len(guessed)}")
+
+    dlg = MarkDialog(paras, guessed, hand.name, win)
+    expect(dlg.table.rowCount() == len(paras), "对话框列出全部段落",
+           f"{dlg.table.rowCount()} / {len(paras)}")
+    expect(dlg.marks() == guessed, "对话框初始值 = 预判结果")
+    dlg._clear_guess()
+    expect(len(dlg.marks()) == 0, "「清除自动预判」把标记清空了")
+
+    for i in (1, 2, 3):
+        dlg._set_level(paras[i].index, i)
+    got = dlg.marks()
+    expect(got.get(paras[1].index) == 1 and got.get(paras[3].index) == 3,
+           "手动设置 1/2/3 级生效", str(got))
+    rows = dlg.marked_rows()
+    expect(len(rows) == 3 and rows[0] == (1, "1 项目简介"), "marked_rows 顺序正确", str(rows))
+    dlg.close()
+
+    tpage._marks = got
+    tpage._rows = rows
+    tpage._edited = True
+    tpage._refresh_view()
+    pump(app, 0.2)
+    expect(tpage.btn_go.isEnabled(), "标记之后主按钮可用")
+    expect("手动标记" in tpage.file_label.text(), "文件区标注「手动标记」",
+           tpage.file_label.text())
+    expect("一级 1" in tpage.stat_label.text(), "统计行跟着变", tpage.stat_label.text())
+
+    res2 = tpage._generate_to(str(OUT / "手打标题_带目录.docx"))
+    expect(res2["entries"] == 3, "按标记生成 3 条目录", str(res2.get("entries")))
+    chk2 = _Doc(str(res2["out"]))
+    heads2 = [p.text.strip() for p in chk2.paragraphs[:3]]
+    expect("目录" in heads2, "目录插在封面之后（不在封面前）", str(heads2))
+    expect(heads2.index("目录") == 1, "页序：封面 → 目录 → 正文", str(heads2))
+
     win._switch(0)
     pump(app, 0.2)
 

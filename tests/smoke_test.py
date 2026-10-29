@@ -20,7 +20,7 @@ from docx import Document  # noqa: E402
 from openpyxl import load_workbook  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from core import office, toc  # noqa: E402
+from core import office, outline, toc  # noqa: E402
 from core.exporter import run_jobs, run_merge  # noqa: E402
 from core.models import ExportSpec, Job, PageRef  # noqa: E402
 from core.sources import open_source  # noqa: E402
@@ -282,6 +282,129 @@ def main() -> int:
             plan.close()
             cont.close()
 
+    # ---------------------------------------------------------------- 手动标标题
+    def _plain_docx(dst: Path) -> Path:
+        """造一份「标题全是手打的」文档：没有标题样式，只有字号和加粗。
+
+        真实场景就是这样 —— 用 WPS 写的人把章节标题写成正文 + 加粗 + 大字，
+        Word 的目录一条都认不出来。样例目录里没有这种文件，只能现场造。
+        """
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt
+
+        d = Document()
+        cover = d.add_paragraph()
+        cover.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = cover.add_run("校园闲置物品循环利用服务平台创业计划书")
+        run.bold = True
+        run.font.size = Pt(22)
+
+        plan = [
+            (1, "1 项目简介"),
+            (2, "1.1 项目介绍"),
+            (3, "1.1.1 平台定位"),
+            (0, "本平台定位于校园专属的闲置物品循环利用服务平台，聚焦高校学生群体。" * 3),
+            (3, "1.1.2 服务内容"),
+            (0, "平台核心服务包含三大板块：闲置交易、租赁和捐赠，覆盖全场景。" * 3),
+            (2, "1.2 项目背景"),
+            (1, "2 市场分析"),
+            (2, "2.1 国内"),
+            (0, "近年来国内校园闲置经济市场规模呈逐年增长趋势，2024 年数据。" * 3),
+        ]
+        for level, text in plan:
+            para = d.add_paragraph()
+            run = para.add_run(text)
+            if level:
+                run.bold = True
+                run.font.size = Pt({1: 16, 2: 14, 3: 12}[level])
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        d.save(str(dst))
+        return dst
+
+    def outline_guess() -> str:
+        plain = _plain_docx(toc_out / "手打标题.docx")
+        assert len(toc.scan_headings(plain)) == 0, "这份文档不该有标题样式"
+
+        paras = outline.list_paragraphs(plain)
+        assert len(paras) == 11, len(paras)
+        marks = outline.guess_levels(paras)
+
+        # 编号规律是最可靠的判据：1 / 1.1 / 1.1.1 分别是 1/2/3 级
+        expect = {1: 1, 2: 2, 3: 3, 5: 3, 7: 2, 8: 1, 9: 2}
+        got = {i: marks.get(i, 0) for i in expect}
+        assert got == expect, (got, expect)
+        # 长正文不该被猜成标题
+        for i in (4, 6, 10):
+            assert marks.get(i, 0) == 0, (i, marks.get(i))
+        return f"{len(paras)} 段，猜出 {len(marks)} 条，级别全对"
+
+    def outline_apply() -> str:
+        plain = _plain_docx(toc_out / "手打标题.docx")
+        paras = outline.list_paragraphs(plain)
+        marks = outline.guess_levels(paras)
+
+        before = hashlib.md5(plain.read_bytes()).hexdigest()
+        dst = toc_out / "手打标题_已标记.docx"
+        n = outline.apply_levels(plain, dst, marks)
+        assert n == len(marks), (n, len(marks))
+        assert hashlib.md5(plain.read_bytes()).hexdigest() == before, "源文件被改动了！"
+
+        from docx.oxml.ns import qn
+
+        d = Document(str(dst))
+        levels = {}
+        for i, p in enumerate(d.paragraphs):
+            ppr = p._p.find(qn("w:pPr"))
+            node = None if ppr is None else ppr.find(qn("w:outlineLvl"))
+            if node is not None:
+                levels[i] = int(node.get(qn("w:val"))) + 1
+        assert levels.get(1) == 1 and levels.get(3) == 3, levels
+
+        # 最要紧的一条：外观一个字都不许变
+        src_doc = Document(str(plain))
+        for i, (a, b) in enumerate(zip(src_doc.paragraphs, d.paragraphs)):
+            assert a.style.name == b.style.name, f"第 {i} 段样式被改了"
+            assert a.alignment == b.alignment, f"第 {i} 段对齐被改了"
+            for ra, rb in zip(a.runs, b.runs):
+                assert ra.font.size == rb.font.size, f"第 {i} 段字号被改了"
+                assert ra.font.bold == rb.font.bold, f"第 {i} 段加粗被改了"
+        return f"{n} 段写了大纲级别，字体/字号/对齐均未变"
+
+    def toc_marks() -> str:
+        plain = _plain_docx(toc_out / "手打标题.docx")
+        assert len(toc.scan_headings(plain)) == 0
+        paras = outline.list_paragraphs(plain)
+        marks = outline.guess_levels(paras)
+        marks.pop(0, None)          # 封面大标题不该进目录
+
+        out = toc_out / "手打标题_带目录.docx"
+        res = office.add_toc_to_docx(plain, out, levels=3, marks=marks)
+        assert res["mode"] == "inserted", res
+        assert res["entries"] == len(marks), (res["entries"], len(marks))
+
+        # 顺序必须是：封面 → 目录 → 正文。目录跑到封面前面是 v1.5.0 的著名 bug
+        d = Document(str(out))
+        assert d.paragraphs[0].text.strip().startswith("校园闲置"), d.paragraphs[0].text[:40]
+        assert d.paragraphs[1].text.strip() == "目录", d.paragraphs[1].text
+        assert "1 项目简介" in d.paragraphs[2].text, d.paragraphs[2].text[:40]
+
+        # 有目录之后再生成：走就地更新，条目数不变（不能叠一份新的）
+        # 注意 marks 要按**新文件**的段落下标重算 —— 插入目录后段落位置全变了，
+        # 拿旧下标去标会标到目录那一行上（第一次写这个测试就栽在这儿）
+        paras2 = outline.list_paragraphs(out)
+        marks2 = outline.guess_levels(paras2)
+        marks2.pop(0, None)                      # 封面大标题同样不进目录
+        again = office.add_toc_to_docx(out, toc_out / "手打标题_再生成.docx",
+                                       levels=3, marks=marks2)
+        assert again["mode"] == "updated", again
+        assert again["entries"] == res["entries"], (again["entries"], res["entries"])
+
+        d3 = Document(str(again["out"]))
+        heads = sum(1 for p in d3.paragraphs if p.text.strip() == "目录")
+        assert heads == 1, f"出现了 {heads} 个「目录」行，应该只有 1 个"
+        return f"{res['entries']} 条目录（纯大纲级别），重复生成不叠加"
+
+
     check("PDF  缩略图", pdf_thumb)
     check("PDF  → PNG（非连续页 p1/p3/p5）", pdf_png)
     check("PDF  → JPG（三页拼长图）", pdf_jpg_long)
@@ -303,6 +426,9 @@ def main() -> int:
     check("Word 目录：静态扫描标题样式", toc_scan)
     check("Word 目录：插入目录且不动源文件", toc_insert)
     check("Word 目录：合并文档自动插目录", toc_merge)
+    check("手动标标题：自动预判级别", outline_guess)
+    check("手动标标题：只写大纲级别，外观不变", outline_apply)
+    check("手动标标题：标完能生成目录", toc_marks)
 
     print("\n" + "=" * 64)
     ok = sum(1 for r in _results if r[0])
