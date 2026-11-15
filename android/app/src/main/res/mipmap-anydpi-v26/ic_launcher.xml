@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标（Android 8.0+）：系统按各家启动器的形状裁剪，图标不会被切歪。
+     前景 ic_launcher_foreground.png 已按安全区缩小，背景色取图标边缘主色。
+     两个资源都由 tools/make_android_icons.py 从 app_icon.ico 生成。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/launcher_bg" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

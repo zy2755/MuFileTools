@@ -26,7 +26,7 @@ DENSITIES = {
 }
 LEGACY_DP = 48          # 传统启动图标 48dp
 ADAPTIVE_DP = 108       # 自适应图层 108dp
-SAFE_RATIO = 0.60       # 前景内容占画布比例（安全区 66dp/108dp ≈ 0.61）
+SAFE_RATIO = 0.62       # 前景内容占画布比例（启动器只显示中间 72dp/108dp ≈ 0.67，超过会切到帽子边缘）
 
 
 def load_icon() -> Image.Image:
@@ -48,25 +48,30 @@ def load_icon() -> Image.Image:
     return img
 
 
-def average_border(img: Image.Image) -> tuple[int, int, int]:
-    """图标边缘平均色，用于挑自适应背景色。"""
+def border_color(img: Image.Image) -> tuple[int, int, int]:
+    """图标边缘最常出现的颜色，作为自适应图标背景色。
+
+    用众数而不是平均值：边缘若有抗锯齿过渡像素，平均值会被拉灰；
+    众数能拿到画布本身的底色（例如白底手绘稿的 #fefefe），
+    背景层与画稿底色一致时，画稿的方块边缘才不会在圆形遮罩里露出来。
+    """
     w, h = img.size
     px = img.convert("RGBA").load()
     cols = []
     for i in range(0, w, max(1, w // 64)):
         for y in (0, h - 1):
             r, g, b, a = px[i, y]
-            if a > 0:
+            if a > 128:
                 cols.append((r, g, b))
     for i in range(0, h, max(1, h // 64)):
         for x in (0, w - 1):
             r, g, b, a = px[x, i]
-            if a > 0:
+            if a > 128:
                 cols.append((r, g, b))
     if not cols:
         return (255, 255, 255)
-    n = len(cols)
-    return tuple(sum(c[k] for c in cols) // n for k in range(3))
+    from collections import Counter
+    return Counter(cols).most_common(1)[0][0]
 
 
 def rounded(img: Image.Image) -> Image.Image:
@@ -85,9 +90,8 @@ def rounded(img: Image.Image) -> Image.Image:
 
 def main() -> None:
     icon = load_icon()
-    bg = average_border(icon)
-    vivid = max(bg) - min(bg) > 24 or max(bg) < 200
-    bg_hex = "#%02x%02x%02x" % bg if vivid else "#ffffff"
+    bg = border_color(icon)
+    bg_hex = "#%02x%02x%02x" % bg
     print(f"自适应背景色: {bg_hex}")
 
     # 传统方形 + 圆形
@@ -101,12 +105,13 @@ def main() -> None:
                 out = rounded(out)
             out.save(target / name)
 
-    # 自适应前景
+    # 自适应前景：画布先铺满背景色，再把画稿贴上去。
+    # 若画布留透明，画稿自带的方块边缘（半透明抗锯齿）叠在白底上会露出一圈浅灰轮廓。
     for dpi, scale in DENSITIES.items():
         canvas_side = round(ADAPTIVE_DP * scale)
         content = round(canvas_side * SAFE_RATIO)
         fg = icon.resize((content, content), Image.LANCZOS)
-        canvas = Image.new("RGBA", (canvas_side, canvas_side), (0, 0, 0, 0))
+        canvas = Image.new("RGBA", (canvas_side, canvas_side), bg + (255,))
         canvas.paste(fg, ((canvas_side - content) // 2, (canvas_side - content) // 2), fg)
         target = RES / ("mipmap-%s" % dpi)
         target.mkdir(parents=True, exist_ok=True)

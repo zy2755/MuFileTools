@@ -20,5 +20,5 @@
     <color name="checker_dark">#cccccc</color>
     <color name="tile_blue">#2f6fed</color>
     <color name="tile_orange">#ff9f43</color>
-    <color name="launcher_bg">#9a8a7d</color>
+    <color name="launcher_bg">#fefefe</color>
 </resources>

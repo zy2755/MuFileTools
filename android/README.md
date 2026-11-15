@@ -5,7 +5,7 @@
 
 - **应用名**：小睦文件转换器
 - **包名**：`com.mutools.filetools`
-- **版本**：1.1.1（versionCode 3）
+- **版本**：1.1.2（versionCode 4）
 - **系统要求**：Android 8.0（API 26）及以上
 - **离线应用**：不申请任何权限、不联网，文件进出全部走系统选择器（SAF / 相册）
 - **界面适配**：已处理 Android 15 强制 edge-to-edge（标题栏不顶状态栏、键盘不遮输入框）
@@ -14,10 +14,15 @@
 
 ## 安装
 
-1. 把 `dist_android/MuFileTools-v1.1.1-android.apk` 传到手机（微信/QQ/数据线均可）；
+1. 把 `dist_android/MuFileTools-v1.1.2-android.apk` 传到手机（微信/QQ/数据线均可）；
 2. 点开安装。系统可能提示「未知来源应用」，允许一次即可；
 3. 打开后：首页用分类标签筛选工具，点卡片进入工具子页，左上角「←」或系统返回键回首页；
    右上角按钮循环切换 **跟随系统 → 浅色 → 深色** 外观。
+
+> **v1.1.2 修复**：换用新的应用图标（白底手绘女巫），并补上 Android 8.0+ 的
+> 自适应图标（`mipmap-anydpi-v26`）—— 此前只给了方形 PNG，各家启动器会自己套白底形状，
+> 图标容易被切歪或加一圈白边。现在交给系统按启动器自身形状裁剪，前景与背景色均由
+> `tools/make_android_icons.py` 从 `app_icon.ico` 生成。
 
 > **v1.1.1 修复**：图片转 ICO 里**一拖圆角滑杆就闪退**。原因是 `Bitmap.copy(config, false)`
 > 得到的是不可变位图，紧接着 `setPixels()` 写入抛 `IllegalStateException`；圆角为 0 时

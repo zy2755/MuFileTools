@@ -153,7 +153,7 @@ main.py                 入口（QApplication + 主窗口壳）
 run.bat                 日常启动（自动使用 .venv）
 install.bat             首次使用：创建 .venv 并安装依赖
 build_exe.bat           PyInstaller 打包成 exe
-app_icon.ico            程序图标
+app_icon.ico            程序图标（正式美术稿，exe 与安卓端共用；勿用 make_exe_icon.py 覆盖）
 core/
   models.py             Unit / ExportSpec / Job 等数据模型 + 支持的文件类型
   sources.py            PdfSource / WordSource / PptSource / ExcelSource，统一 open/units/thumbnail/render/export
@@ -176,7 +176,8 @@ ui/
   settings.py           外观偏好读写（QSettings）
 tools/
   make_samples.py       生成 PDF / Word / Excel / PPT 演示文件
-  make_exe_icon.py      重新生成 app_icon.ico
+  make_exe_icon.py      生成占位用 app_icon.ico（仅在美术稿丢失时救急，会覆盖现有图标）
+  make_android_icons.py 从 app_icon.ico 生成安卓 mipmap 各密度图标与自适应图标前景
   fetch_wheels.py       弱网环境分片下载 wheel 再离线安装
 tests/
   smoke_test.py         25 项无界面自测（解析→导出→回读校验）
