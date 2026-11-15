@@ -122,7 +122,11 @@ class IcoPage(
 
     private fun renderFrame(s: Bitmap, cur: Int) {
         val r = cur.toFloat()
-        val big = IcoCore.applyRound(s, r)
+        val rounded = IcoCore.applyRound(s, r)
+        // 大图也垫棋盘格（与桌面版一致）：白底图片的圆角切在浅色卡片上根本看不出来，
+        // 棋盘格只会从被切掉的四角透出来，圆角大小一眼可辨
+        val big = IcoCore.onCheckerboard(rounded, cell = maxOf(8, rounded.width / 64))
+        if (rounded !== s) rounded.recycle()
         val previews = intArrayOf(256, 64, 32, 16).map { previewOf(s, it, r) }
         activity.runOnUiThread {
             val stale = shownImages.toList()
@@ -145,7 +149,8 @@ class IcoPage(
     private fun previewOf(s: Bitmap, side: Int, r: Float): Bitmap {
         val fit = IcoCore.fitSquare(s, side)
         val rounded = IcoCore.applyRound(fit, r)
-        val out = IcoCore.onCheckerboard(rounded)
+        // 每档都保持约 16 格，缩略图按钮上大小一致；格子太少会只剩两三块灰斑
+        val out = IcoCore.onCheckerboard(rounded, cell = maxOf(2, side / 16))
         if (rounded === fit) {
             // 圆角为 0 时 applyRound 原样返回，两者是同一个对象，只回收一次
             if (fit !== s) fit.recycle()

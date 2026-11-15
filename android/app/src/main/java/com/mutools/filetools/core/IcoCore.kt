@@ -1,10 +1,12 @@
 package com.mutools.filetools.core
 
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Shader
 
 /**
  * 「图片转 ICO」的位图处理核心，逐条对应桌面版 core/iconizer.py：
@@ -51,58 +53,29 @@ object IcoCore {
         if (src.width == side) src else Bitmap.createScaledBitmap(src, side, side, true)
 
     /**
-     * 给图加圆角：圆角外透明；图片自身已有的透明区域保持不变
-     * （alpha 逐像素取暗合并，对应 ImageChops.darker）。
+     * 给图加圆角：圆角外透明；图片自身已有的透明区域保持不变。
+     *
+     * v1.1.3 之前用 `copy() + setPixels 改 alpha`：`copy()` 会把源位图的 hasAlpha
+     * 一起复制过去，而相册/相机出来的 JPEG 位图 hasAlpha=false —— 这时写进像素的
+     * alpha 在绘制阶段被整张忽略，圆角"加了但看不见"（白底图尤其明显：四角照旧是白的）。
+     * 现在改为新建 ARGB 位图 + BitmapShader 填进圆角矩形：圆角外根本不绘制，
+     * 新建位图本就是全透明，既不依赖源图的 hasAlpha，也不用逐像素数组（省 8MB 临时内存）。
      */
     fun applyRound(src: Bitmap, radiusPct: Float): Bitmap {
         if (radiusPct <= 0f) return src
         val square = if (src.width != src.height) toSquare(src, true) else src
         val side = square.width
-        val mask = roundedMask(side, radiusPct)
-        // 第二个参数必须为 true（可变）：下面要 setPixels 写像素，
-        // 传 false 得到不可变位图，setPixels 会抛 IllegalStateException（v1.1.0 圆角闪退的根因）
-        val out = square.copy(Bitmap.Config.ARGB_8888, true)
-        val n = side * side
-        val px = IntArray(n)
-        val mp = IntArray(n)
-        out.getPixels(px, 0, side, 0, 0, side, side)
-        mask.getPixels(mp, 0, side, 0, 0, side, side)
-        for (i in 0 until n) {
-            val a = (px[i] ushr 24) and 0xFF
-            val m = (mp[i] ushr 24) and 0xFF
-            px[i] = (minOf(a, m) shl 24) or (px[i] and 0x00FFFFFF)
-        }
-        out.setPixels(px, 0, side, 0, 0, side, side)
-        mask.recycle()
-        return out
-    }
-
-    /**
-     * 抗锯齿圆角蒙版：先放大 SS 倍画圆角矩形，再缩回目标尺寸。
-     * 超采样倍数按目标尺寸自适应 —— 小尺寸靠超采样补边缘，大尺寸本身已够细，
-     * 且这样每档的临时蒙版都控制在 1024² ≈ 4MB，避免 1024×4=4096²（64MB）的内存尖峰。
-     */
-    private fun roundedMask(size: Int, radiusPct: Float): Bitmap {
         val pct = radiusPct.coerceIn(0f, 50f)
-        val ss = when {
-            size <= 128 -> 8
-            size <= 256 -> 4
-            size <= 512 -> 2
-            else -> 1
-        }
-        val big = size * ss
-        val mask = Bitmap.createBitmap(big, big, Bitmap.Config.ARGB_8888)
-        val c = Canvas(mask)
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.WHITE
-            style = Paint.Style.FILL
-        }
-        val r = big * pct / 100f
-        c.drawRoundRect(RectF(0f, 0f, big.toFloat(), big.toFloat()), r, r, p)
-        if (ss == 1) return mask
-        val scaled = Bitmap.createScaledBitmap(mask, size, size, true)
-        mask.recycle()
-        return scaled
+        val r = side * pct / 100f
+        val out = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+        out.setHasAlpha(true)
+        val c = Canvas(out)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        // 用 BitmapShader 把原图「填」进圆角矩形：圆角外根本没有绘制，
+        // 新建位图那里本来就是全透明，不依赖 xfermode 去削 alpha
+        paint.shader = BitmapShader(square, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        c.drawRoundRect(RectF(0f, 0f, side.toFloat(), side.toFloat()), r, r, paint)
+        return out
     }
 
     /** 每一档尺寸分别缩放、加圆角，保证小尺寸的圆角比例一致、边缘清晰。 */
