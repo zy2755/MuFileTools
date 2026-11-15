@@ -17,6 +17,7 @@ class PageAdapter(
     private val render: (entryId: Int, page: Int, cb: (Bitmap?) -> Unit) -> Unit,
     private val toggle: (Int) -> Boolean,
     private val preview: (Int) -> Unit,
+    private val labelOf: (Int) -> String = { "第 ${it + 1} 页" },
 ) : RecyclerView.Adapter<PageAdapter.VH>() {
 
     private var entryId = -1
@@ -50,7 +51,7 @@ class PageAdapter(
 
     override fun onBindViewHolder(h: VH, pos: Int) {
         val b = h.binding
-        b.txtNo.text = "第 ${pos + 1} 页"
+        b.txtNo.text = labelOf(pos)
         applyCheck(b, checked(pos))
         b.root.setOnClickListener {
             val now = toggle(pos)

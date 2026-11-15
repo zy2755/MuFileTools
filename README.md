@@ -59,6 +59,10 @@ python main.py
 | Excel 的工作表 | PDF | 每张表按打印区域转 PDF 后合并 |
 | PPT 的页 | PPTX | 整份复制后删掉没选的页，母版/版式/动画/备注都保留 |
 
+> **安卓版**没有 Office COM 引擎，改成**自己解析 OOXML**：PPTX 读「幻灯片 XML + 版式/母版
+> 三级继承」按固定版式绘制，XLSX 读「工作表 + 共享字符串 + 单元格样式」按列宽/行高画表，
+> 都不用装 Office。导出支持 PNG / JPG / 长图 / PDF，详见 [android/README.md](android/README.md)。
+
 ---
 
 ## 工具二：图片转 ICO

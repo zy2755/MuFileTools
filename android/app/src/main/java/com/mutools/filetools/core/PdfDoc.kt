@@ -13,17 +13,23 @@ import java.io.OutputStream
  * 一个打开的 PDF：缩略图 / 按 DPI 渲染 / 页面提取（pdfbox 复制保留矢量）。
  * 对应桌面版 core/sources.py 的 PdfSource。
  */
-class PdfDoc(private val context: Context, val uri: Uri) : Closeable {
+class PdfDoc(private val context: Context, val uri: Uri) : PageSource {
 
     private val pfd = context.contentResolver.openFileDescriptor(uri, "r")!!
     private val renderer = PdfRenderer(pfd)
     private val lock = Any()
 
-    val pageCount: Int
+    override val pageCount: Int
         get() = synchronized(lock) { renderer.pageCount }
 
+    override val unitName: String get() = "页"
+
+    override fun label(index: Int): String = "第 ${index + 1} 页"
+
+    override fun fileLabel(index: Int): String = (index + 1).toString()
+
     /** 渲染一页，宽为 targetWidth（等比），白底，用于缩略图与预览。 */
-    fun renderPage(index: Int, targetWidth: Int): Bitmap = synchronized(lock) {
+    override fun renderPage(index: Int, targetWidth: Int): Bitmap = synchronized(lock) {
         val page = renderer.openPage(index)
         try {
             val w = targetWidth.coerceAtLeast(1)
@@ -38,7 +44,7 @@ class PdfDoc(private val context: Context, val uri: Uri) : Closeable {
     }
 
     /** 按 DPI 渲染一页（PDF 页面单位是 1/72 英寸），白底，用于导出。 */
-    fun renderPageDpi(index: Int, dpi: Int): Bitmap = synchronized(lock) {
+    override fun renderPageDpi(index: Int, dpi: Int): Bitmap = synchronized(lock) {
         val page = renderer.openPage(index)
         try {
             val scale = dpi / 72f
@@ -62,8 +68,9 @@ class PdfDoc(private val context: Context, val uri: Uri) : Closeable {
     /**
      * 把选中页写成新 PDF：重新加载原文档、倒序删除未选页后保存，
      * 保留矢量、文字、链接与书签（对应桌面版 PdfSource.export_pdf 的保真做法）。
+     * dpi 参数在这里用不上（不重新光栅化），保留是为了接口一致。
      */
-    fun extract(selected: IntArray, out: OutputStream) {
+    override fun exportPdf(selected: IntArray, dpi: Int, out: OutputStream) {
         require(selected.isNotEmpty()) { "没有选中任何页面" }
         val src = context.contentResolver.openInputStream(uri)!!
         PDDocument.load(src).use { doc ->

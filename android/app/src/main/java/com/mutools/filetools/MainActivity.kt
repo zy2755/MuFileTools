@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity(), Host {
     // ------------------------------------------------------------ 选择器路由
 
     private val pdfPicker = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (!uris.isNullOrEmpty()) extractPage?.onPdfsAdded(uris)
+        if (!uris.isNullOrEmpty()) extractPage?.onDocsAdded(uris)
     }
     private val imagePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { icoPage?.onImagePicked(it) }
@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity(), Host {
         createCallback?.invoke(u); createCallback = null
     }
 
-    override fun pickPdfs() = pdfPicker.launch(arrayOf("application/pdf"))
+    override fun pickDocs() = pdfPicker.launch(com.mutools.filetools.core.PageSources.MIME_TYPES)
 
     /** 相册优先：DocumentsUI 在很多国产 ROM 上看不到相册图片。 */
     override fun pickImage() {
@@ -242,7 +242,7 @@ class MainActivity : AppCompatActivity(), Host {
 
 /** 工具页需要的宿主能力（选择器/建文件），MainActivity 实现。 */
 interface Host {
-    fun pickPdfs()
+    fun pickDocs()
     fun pickImage()
     fun pickImageFile()
     fun pickTree()
