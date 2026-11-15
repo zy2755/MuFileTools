@@ -14,7 +14,6 @@ object IcoCore {
 
     val ICO_SIZES = intArrayOf(256, 128, 64, 48, 32, 24, 16)
     const val SOURCE_MAX = 1024
-    private const val SS = 4  // 圆角蒙版超采样倍数
 
     /** 等比缩小到最大边长以内（只缩小，不放大）。 */
     fun downscale(src: Bitmap, maxSide: Int = SOURCE_MAX): Bitmap {
@@ -60,7 +59,9 @@ object IcoCore {
         val square = if (src.width != src.height) toSquare(src, true) else src
         val side = square.width
         val mask = roundedMask(side, radiusPct)
-        val out = square.copy(Bitmap.Config.ARGB_8888, false)
+        // 第二个参数必须为 true（可变）：下面要 setPixels 写像素，
+        // 传 false 得到不可变位图，setPixels 会抛 IllegalStateException（v1.1.0 圆角闪退的根因）
+        val out = square.copy(Bitmap.Config.ARGB_8888, true)
         val n = side * side
         val px = IntArray(n)
         val mp = IntArray(n)
@@ -76,10 +77,20 @@ object IcoCore {
         return out
     }
 
-    /** 抗锯齿圆角蒙版：按 4 倍超采样绘制圆角矩形后缩小回目标尺寸。 */
+    /**
+     * 抗锯齿圆角蒙版：先放大 SS 倍画圆角矩形，再缩回目标尺寸。
+     * 超采样倍数按目标尺寸自适应 —— 小尺寸靠超采样补边缘，大尺寸本身已够细，
+     * 且这样每档的临时蒙版都控制在 1024² ≈ 4MB，避免 1024×4=4096²（64MB）的内存尖峰。
+     */
     private fun roundedMask(size: Int, radiusPct: Float): Bitmap {
         val pct = radiusPct.coerceIn(0f, 50f)
-        val big = size * SS
+        val ss = when {
+            size <= 128 -> 8
+            size <= 256 -> 4
+            size <= 512 -> 2
+            else -> 1
+        }
+        val big = size * ss
         val mask = Bitmap.createBitmap(big, big, Bitmap.Config.ARGB_8888)
         val c = Canvas(mask)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -88,7 +99,10 @@ object IcoCore {
         }
         val r = big * pct / 100f
         c.drawRoundRect(RectF(0f, 0f, big.toFloat(), big.toFloat()), r, r, p)
-        return Bitmap.createScaledBitmap(mask, size, size, true)
+        if (ss == 1) return mask
+        val scaled = Bitmap.createScaledBitmap(mask, size, size, true)
+        mask.recycle()
+        return scaled
     }
 
     /** 每一档尺寸分别缩放、加圆角，保证小尺寸的圆角比例一致、边缘清晰。 */

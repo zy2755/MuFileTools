@@ -37,6 +37,8 @@ class IcoPage(
 
     private val exec = Executors.newSingleThreadExecutor()
     private val pending = AtomicBoolean(false)
+    @Volatile private var dirty = false             // 拖动期间又有新值待算
+    private val shownImages = ArrayList<Bitmap>()    // 已交给 UI 的位图（只在 UI 线程访问）
 
     init {
         container.addView(binding.root)
@@ -98,27 +100,60 @@ class IcoPage(
         return n ?: uri.lastPathSegment?.substringAfterLast('/') ?: "图片"
     }
 
-    /** 滑杆快速拖动时合并刷新：后到的计算覆盖先到的。 */
+    /** 滑杆拖动时合并刷新：拖动期间只算最新值，松手后补最后一帧。 */
     private fun refresh() {
         val s = square ?: return
+        dirty = true
         if (!pending.compareAndSet(false, true)) return
         exec.execute {
-            pending.set(false)
-            val cur = pct
-            val big = IcoCore.applyRound(s, cur.toFloat())
-            val pv256 = IcoCore.onCheckerboard(IcoCore.applyRound(IcoCore.fitSquare(s, 256), cur.toFloat()))
-            val pv64 = IcoCore.onCheckerboard(IcoCore.applyRound(IcoCore.fitSquare(s, 64), cur.toFloat()))
-            val pv32 = IcoCore.onCheckerboard(IcoCore.applyRound(IcoCore.fitSquare(s, 32), cur.toFloat()))
-            val pv16 = IcoCore.onCheckerboard(IcoCore.applyRound(IcoCore.fitSquare(s, 16), cur.toFloat()))
-            activity.runOnUiThread {
-                binding.imgMain.setImageBitmap(big)
-                binding.pv256.setImageBitmap(pv256)
-                binding.pv64.setImageBitmap(pv64)
-                binding.pv32.setImageBitmap(pv32)
-                binding.pv16.setImageBitmap(pv16)
-                binding.txtPct.text = "$cur%"
+            try {
+                while (dirty) {
+                    dirty = false
+                    renderFrame(s, pct)
+                }
+            } catch (t: Throwable) {
+                // 预览失败不该把整个应用带走（v1.1.0 就是这么闪退的）
+                android.util.Log.e("MuFileTools", "圆角预览失败", t)
+            } finally {
+                pending.set(false)
             }
         }
+    }
+
+    private fun renderFrame(s: Bitmap, cur: Int) {
+        val r = cur.toFloat()
+        val big = IcoCore.applyRound(s, r)
+        val previews = intArrayOf(256, 64, 32, 16).map { previewOf(s, it, r) }
+        activity.runOnUiThread {
+            val stale = shownImages.toList()
+            shownImages.clear()
+            binding.imgMain.setImageBitmap(big)
+            binding.pv256.setImageBitmap(previews[0])
+            binding.pv64.setImageBitmap(previews[1])
+            binding.pv32.setImageBitmap(previews[2])
+            binding.pv16.setImageBitmap(previews[3])
+            binding.txtPct.text = "$cur%"
+            shownImages.add(big)
+            shownImages.addAll(previews)
+            // 换下来的位图立即回收：Bitmap 走 native 堆，等 GC 会越拖越涨直至 OOM。
+            // 源图 square 由页面持有，绝不能在这里回收。
+            stale.forEach { if (it !== s && !it.isRecycled) it.recycle() }
+        }
+    }
+
+    /** 生成某一档的棋盘格预览，并回收中间的缩放/圆角临时位图。 */
+    private fun previewOf(s: Bitmap, side: Int, r: Float): Bitmap {
+        val fit = IcoCore.fitSquare(s, side)
+        val rounded = IcoCore.applyRound(fit, r)
+        val out = IcoCore.onCheckerboard(rounded)
+        if (rounded === fit) {
+            // 圆角为 0 时 applyRound 原样返回，两者是同一个对象，只回收一次
+            if (fit !== s) fit.recycle()
+        } else {
+            if (fit !== s) fit.recycle()
+            if (rounded !== s) rounded.recycle()
+        }
+        return out
     }
 
     private fun export() {
@@ -128,19 +163,27 @@ class IcoPage(
         }
         binding.btnExportIco.isEnabled = false
         exec.execute {
-            val frames = IcoCore.buildFrames(s, pct.toFloat())
-            val bytes = IcoEncoder.encode(frames)
-            activity.runOnUiThread {
-                binding.btnExportIco.isEnabled = true
-                val stem = Outputs.clean(Outputs.stem(sourceName ?: "图标")).ifEmpty { "图标" }
-                host.launchCreate(Outputs.mimeOf("$stem.ico"), "$stem.ico") { uri ->
-                    if (uri == null) return@launchCreate
-                    activity.lifecycleScope.launch(Dispatchers.IO) {
-                        Outputs.writeBytes(activity, uri, bytes)
-                        withContext(Dispatchers.Main) {
-                            toast("已导出 ICO（七档尺寸）")
+            try {
+                val frames = IcoCore.buildFrames(s, pct.toFloat())
+                val bytes = IcoEncoder.encode(frames)
+                activity.runOnUiThread {
+                    binding.btnExportIco.isEnabled = true
+                    val stem = Outputs.clean(Outputs.stem(sourceName ?: "图标")).ifEmpty { "图标" }
+                    host.launchCreate(Outputs.mimeOf("$stem.ico"), "$stem.ico") { uri ->
+                        if (uri == null) return@launchCreate
+                        activity.lifecycleScope.launch(Dispatchers.IO) {
+                            Outputs.writeBytes(activity, uri, bytes)
+                            withContext(Dispatchers.Main) {
+                                toast("已导出 ICO（七档尺寸）")
+                            }
                         }
                     }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("MuFileTools", "导出 ICO 失败", t)
+                activity.runOnUiThread {
+                    binding.btnExportIco.isEnabled = true
+                    toast("导出失败：${t.javaClass.simpleName}")
                 }
             }
         }
