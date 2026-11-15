@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 浅色调色板：与桌面版 ui/theme.py 的 _LIGHT 保持一致 -->
+<resources>
+    <color name="accent">#2f6fed</color>
+    <color name="accent_pressed">#1f55c4</color>
+    <color name="on_accent">#ffffff</color>
+    <color name="bg">#f2f5fa</color>
+    <color name="surface">#ffffff</color>
+    <color name="surface_alt">#fbfcfe</color>
+    <color name="surface_sunk">#f7faff</color>
+    <color name="border">#dfe5ef</color>
+    <color name="border_strong">#c3d2ee</color>
+    <color name="text">#1b2333</color>
+    <color name="muted">#6b7688</color>
+    <color name="hover_bg">#eef3fe</color>
+    <color name="selected_bg">#f2f7ff</color>
+    <color name="track">#e8edf6</color>
+    <color name="disabled_text">#a9b2c2</color>
+    <color name="checker_light">#ffffff</color>
+    <color name="checker_dark">#cccccc</color>
+    <color name="tile_blue">#2f6fed</color>
+    <color name="tile_orange">#ff9f43</color>
+    <color name="launcher_bg">#9a8a7d</color>
+</resources>

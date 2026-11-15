@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色调色板：与桌面版 ui/theme.py 的 _DARK 保持一致 -->
+<resources>
+    <color name="accent">#4c8dff</color>
+    <color name="accent_pressed">#6ea3ff</color>
+    <color name="on_accent">#0f1620</color>
+    <color name="bg">#1b1f27</color>
+    <color name="surface">#242a34</color>
+    <color name="surface_alt">#1f242d</color>
+    <color name="surface_sunk">#2b3341</color>
+    <color name="border">#333c4a</color>
+    <color name="border_strong">#4a5a72</color>
+    <color name="text">#e6ecf6</color>
+    <color name="muted">#98a4b8</color>
+    <color name="hover_bg">#2a3a55</color>
+    <color name="selected_bg">#25334a</color>
+    <color name="track">#3d4757</color>
+    <color name="disabled_text">#5f6a7d</color>
+    <color name="checker_light">#3a414d</color>
+    <color name="checker_dark">#4a5260</color>
+</resources>
