@@ -20,8 +20,8 @@
     <string name="pick_image">选择图片…</string>
     <string name="export_ico">导出 ICO…</string>
     <string name="ico_hint">导出的 .ico 包含 256 / 128 / 64 / 48 / 32 / 24 / 16 七档尺寸，可直接用作 Windows 图标</string>
-    <string name="office_note">支持 PDF（按页）、PPTX（按幻灯片）、XLSX（按工作表）。PPT/Excel 由本机直接解析渲染，不需要装 Office；旧版 .ppt / .xls 请先另存为新格式。Word 的分页要靠排版引擎算，暂不支持。</string>
-    <string name="empty_pdf_hint">点击「添加文件」选择 PDF / PPTX / XLSX，勾选需要的内容后开始导出</string>
+    <string name="office_note">支持 PDF（按页）、PPTX（按幻灯片）、XLSX / XLS（按工作表）。PPT/Excel 由本机直接解析渲染，不需要装 Office；旧版 .ppt 请先另存为 .pptx。Word 的分页要靠排版引擎算，暂不支持。</string>
+    <string name="empty_pdf_hint">点击「添加文件」选择 PDF / PPTX / XLSX / XLS，勾选需要的内容后开始导出</string>
     <string name="no_page">无页面</string>
     <string name="section_common">常用工具</string>
     <string name="pick_image_file">从文件选择</string>

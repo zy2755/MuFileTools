@@ -5,7 +5,7 @@
 
 - **应用名**：小睦文件转换器
 - **包名**：`com.mutools.filetools`
-- **版本**：1.2.0（versionCode 6）
+- **版本**：1.3.0（versionCode 7）
 - **系统要求**：Android 8.0（API 26）及以上
 - **离线应用**：不申请任何权限、不联网，文件进出全部走系统选择器（SAF / 相册）
 - **界面适配**：已处理 Android 15 强制 edge-to-edge（标题栏不顶状态栏、键盘不遮输入框）
@@ -14,10 +14,17 @@
 
 ## 安装
 
-1. 把 `dist_android/MuFileTools-v1.2.0-android.apk` 传到手机（微信/QQ/数据线均可）；
+1. 把 `dist_android/MuFileTools-v1.3.0-android.apk` 传到手机（微信/QQ/数据线均可）；
 2. 点开安装。系统可能提示「未知来源应用」，允许一次即可；
 3. 打开后：首页用分类标签筛选工具，点卡片进入工具子页，左上角「←」或系统返回键回首页；
    右上角按钮循环切换 **跟随系统 → 浅色 → 深色** 外观。
+
+> **v1.3.0 新增：旧版 `.xls`（Excel 97-2003）直接提取。** 此前遇到 `.xls` 只弹一句
+> 「请先另存为 .xlsx」—— 现在不用了。`.xls` 是 OLE2 复合文档里的一条 BIFF8 记录流，
+> 应用自己解：复合文档（FAT 链 / 迷你流 / 目录）、BIFF8 记录（共享字符串含 CONTINUE 分片、
+> XF 样式、调色板、合并单元格、公式 RPN 字节码），渲染复用 `.xlsx` 那一套表格绘制层。
+> 于是「页面提取」支持 **PDF / PPTX / XLSX / XLS** 四种输入。`.ppt` 仍未支持（ESCHER
+> 二进制形状树，还原度会明显不如 .pptx），仍提示另存为 `.pptx`。
 
 > **v1.2.0 新增：PPTX 幻灯片 / XLSX 工作表提取。** 不需要装 Office，也不用联网——
 > 应用自己拆 `zip` 读 OOXML：PPTX 按「幻灯片 → 版式 → 母版」三级继承拿到形状坐标与字号，
@@ -60,15 +67,15 @@
 点工具卡进入子页（左上角「←」返回，系统返回键同效）。右上角循环切换
 **跟随系统 → 浅色 → 深色** 外观。新增工具时在 `MainActivity.tools` 列表登记即可。
 
-### 页面提取（PDF / PPTX / XLSX）
+### 页面提取（PDF / PPTX / XLSX / XLS）
 
-三种输入共用一套界面，区别只在「一个单位是什么」：PDF 是**页**、PPTX 是**幻灯片**、
-XLSX 是**工作表**。缩略图角标直接写单位名（`第 3 页` / `销售明细`），计数显示
+四种输入共用一套界面，区别只在「一个单位是什么」：PDF 是**页**、PPTX 是**幻灯片**、
+XLSX / XLS 是**工作表**。缩略图角标直接写单位名（`第 3 页` / `销售明细`），计数显示
 「已选 3 / 3 个表」，不用记当前是什么格式。
 
 | 环节 | 说明 |
 | --- | --- |
-| 添加 | 「添加文件」可多选；系统选择器只列 pdf / pptx / xlsx，选到 .ppt / .xls 会提示先另存为新格式 |
+| 添加 | 「添加文件」可多选；系统选择器列出 pdf / pptx / xlsx / xls，选到 .ppt 会提示先另存为 .pptx |
 | 勾选 | 网格缩略图懒加载渲染；点卡片勾选/取消，长按看大图；≤9 个单位自动全选，否则手动「全选」 |
 | 导出格式 | PNG 图片 / JPG 图片 / PNG 长图 / JPG 长图 / PDF 文档 |
 | 清晰度 | 100 / 150 / 200 / 300 / 600 DPI（单页超 4000 万像素会自动缩档防崩溃） |
@@ -77,16 +84,17 @@ XLSX 是**工作表**。缩略图角标直接写单位名（`第 3 页` / `销�
 
 - PNG/JPG：按 DPI 光栅化（白底），一个单位一张图；
 - 长图：所选单位按最宽者统一宽度竖向拼接，总高超 65000px 时整体缩小（JPEG 单边上限）；
-- PDF：PDF 输入用 pdfbox 重新打包选中页，**保留矢量、文字、链接**；PPTX / XLSX 输入
+- PDF：PDF 输入用 pdfbox 重新打包选中页，**保留矢量、文字、链接**；PPTX / XLSX / XLS 输入
   没有矢量可复用，是按 DPI 渲染成位图后逐页写入 `PdfDocument`（一页一张整图）。
 
-#### 三种输入怎么解析
+#### 四种输入怎么解析
 
 | 格式 | 做法 | 已知局限 |
 | --- | --- | --- |
 | PDF | 系统 `PdfRenderer` 渲染 + pdfbox 取页 | —— |
 | PPTX | 读 `presentation.xml` 拿页序与画布尺寸（EMU），逐页把 `p:spTree` 里的形状按 `<a:xfrm>` 画到 Canvas | 只画文本框/占位符、图片、表格、线条、组合与常见预设几何；SmartArt、图表、动画、艺术字不渲染 |
 | XLSX | 读 `sheet` + `sharedStrings` + `cellXfs` 样式与 `numFmts`，按列宽行高、合并单元格、边框底纹自己画表 | 不画图表、图片、条件格式图标；公式优先用缓存值，没有缓存值时用内置极简求值器算四则与 SUM/AVERAGE/MIN/MAX/COUNT/ABS/ROUND |
+| XLS | 先解 OLE2 复合文档（头 → FAT 链 → 目录 → 迷你流）取出 `Workbook` 流，再顺序扫 BIFF8 记录：`BOUNDSHEET` 定表、`SST`+`CONTINUE` 取共享字符串、`XF`/`FONT`/`FORMAT` 取样式、`LABELSST`/`NUMBER`/`RK`/`MULRK`/`FORMULA` 取单元格；渲染与 XLSX 共用同一份表格绘制层 | 同 XLSX；公式读 `FORMULA` 里的 RPN 字节码现场求值（不认识的 token 留空，不瞎猜） |
 
 两条硬骨头都记在代码注释里，便于以后维护：
 
@@ -99,7 +107,27 @@ XLSX 是**工作表**。缩略图角标直接写单位名（`第 3 页` / `销�
    Skia 在这个量级**一个字节都不出**（画面全白且不报错）。做法是照旧在 EMU 里算位置，
    进文字前 `c.scale(1/s, 1/s)` 抵消外层缩放，之后全按像素画。
 
-PDF 与 PPTX / XLSX 走同一个 `PageSource` 接口（`pageCount` / `label()` / `renderPage()` /
+BIFF8（`.xls`）踩到的坑同样记在注释里，都是"看起来能跑、结果全错"的那种：
+
+1. **BOF 的记录类型永远是 `0x0809`**，"这是工作簿还是工作表"写在负载的 `dt` 里
+   （+2 偏移；+0 是 `vers`）。别拿 `dt` 的值（`0x0010`）去和记录类型比 ——
+   记录 `0x0040` 本身就是一条真实记录，一比就提前收工，全局区一个样式都读不到。
+2. **`EXTERNSHEET` 记录开头有 2 字节 `cXTI`（条数）**，不是第一个表项。漏掉它整表错位
+   2 字节，所有跨表引用（`Sheet2!A1`）全部解析失败、格子显示空白。
+3. **字体索引 4 是保留槽位**，文件里没有对应的 `FONT` 记录。不在第 5 条字体前补个占位，
+   从它开始所有字体都错一位 —— 表现是标题变白字（看不见）、表头变黑字。
+4. **`FORMULA` 的"非数字结果"标记在 8 字节末尾**（`FF FF`），开头第 1 字节是类型
+   （0 字符串 / 1 布尔 / 2 错误 / 3 空）。判在开头的话，`03 00 … FF FF` 会被当成一个
+   double 读出来，得到一个无意义的小数（常常是 NaN）。
+5. **公式只存 RPN 字节码，没有文本**，且未必有缓存值。`44 0200 02C0` 就是"引用 C3"。
+   内置求值器按 token 走栈：四则、括号、引用/区域、3D 引用，加上
+   SUM / AVERAGE / MIN / MAX / COUNT / COUNTA / ABS / INT / ROUND / MOD；
+   遇到不认识的 token 直接放弃（留空），不猜。
+6. **Kotlin 属性初始化顺序**：`init {}` 里用到的字段必须声明在它**之前**，
+   否则执行 init 时字段还是 `null`（而且 init 里赋的值随后会被字段自己的初始值覆盖）。
+   这个坑让 `sst` 与 `pendingMeta` 白读了一遍。
+
+PDF 与 PPTX / XLSX / XLS 走同一个 `PageSource` 接口（`pageCount` / `label()` / `renderPage()` /
 `exportPdf()`），界面层不感知格式；新增一种输入只要实现这个接口并在
 `PageSources.open()` 里登记一行。
 
@@ -125,9 +153,10 @@ PPT / Excel 之所以能补上，是因为它们**天生就是固定版式或方
 取决于字体、行高、段距、避头尾、表格跨页规则，等于要在手机上重写一个排版引擎，
 所以本版明确不做。要做的话可行路线是引入 LibreOffice 内核，代价是安装包从 3MB 涨到 100MB+。
 
-**旧版二进制格式**（`.ppt` / `.xls` / `.doc`）：OOXML 是 zip + XML，能直接拆；97-2003 的
-`.ppt` / `.xls` 是复合文档（OLE）二进制，得另写一套解析。目前选择走系统选择器直接过滤掉，
-选到会提示「请先另存为 .pptx / .xlsx」。
+**旧版 `.ppt`**（PowerPoint 97-2003）：`.xls` 已经支持了（见上），`.ppt` 还是不行。
+`.ppt` 的形状是 ESCHER / OfficeArt 记录树（`OfficeArtSpContainer` 套 `OfficeArtClientTextbox`，
+文字的样式还得回 `PP9Doc` 里的 `TxMasterStyleAtom` 查），代码量比 `.xls` 大一倍以上，
+而且还原度天然不如 `.pptx`（复杂版式容易走样）。选到 `.ppt` 会提示「请先另存为 .pptx」。
 
 其它差异：无拖放（移动端用文件选择器）、无 DOCX / PPTX / XLSX 导出（只导出图片与 PDF）、
 深浅色记忆在应用内（跟随系统时随系统自动切换）。
@@ -182,13 +211,16 @@ android/
         Opc.kt                    OOXML 容器层：zip 随机读、.rels 关系解析、XML 小工具
         PdfDoc.kt                 PDF 打开/缩略图/按 DPI 渲染/页面提取（pdfbox）
         PptxDoc.kt                PPTX 解析与渲染（版式/母版继承、形状、图片、表格）
-        XlsxDoc.kt                XLSX 解析与渲染（样式、数字/日期格式、合并单元格、公式兜底）
+        XlsxDoc.kt                XLSX 解析（样式、数字/日期格式、合并单元格、公式兜底）
+        XlsDoc.kt                 XLS（BIFF8）解析：记录扫描、SST/CONTINUE、XF/FONT、公式字节码求值
+        Cfb.kt                    OLE2 复合文档读取器（FAT 链 / 迷你流 / 目录）
+        SheetTable.kt             表格模型与绘制层（XLSX 与 XLS 共用）、数字与日期格式
         IcoCore.kt                ICO 位图算法（对应 iconizer.py）
         IcoEncoder.kt             ICO 字节流打包（纯 JVM，可单测）
         ImageOps.kt               EXIF 纠偏解码 + 长图拼接
         Outputs.kt                SAF 写文件、文件名清洗与去重
       ui/
-        ExtractPage.kt            页面提取工具页（三种输入共用）
+        ExtractPage.kt            页面提取工具页（四种输入共用）
         IcoPage.kt                图片转 ICO 工具页
         PageAdapter.kt            缩略图网格（懒渲染 + LRU 缓存）
       util/Prefs.kt               主题偏好、输出目录记忆

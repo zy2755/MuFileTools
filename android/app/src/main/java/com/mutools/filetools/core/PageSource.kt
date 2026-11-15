@@ -84,7 +84,7 @@ class PageSourceException(message: String) : Exception(message)
  */
 object PageSources {
 
-    val SUPPORTED_EXT = arrayOf("pdf", "pptx", "xlsx")
+    val SUPPORTED_EXT = arrayOf("pdf", "pptx", "xlsx", "xls")
 
     /** 文件选择器要过滤的类型：Office 旧格式也列出来，好给"请先另存为新格式"的提示。 */
     val MIME_TYPES = arrayOf(
@@ -103,8 +103,8 @@ object PageSources {
             "pdf" -> PdfDoc(context, uri)
             "pptx" -> PptxDoc(context, uri)
             "xlsx" -> XlsxDoc(context, uri)
+            "xls" -> XlsDoc(context, uri)
             "ppt" -> throw PageSourceException("旧版 .ppt 请先用 Office/WPS 另存为 .pptx")
-            "xls" -> throw PageSourceException("旧版 .xls 请先用 Office/WPS 另存为 .xlsx")
             "doc", "docx" -> throw PageSourceException("Android 版暂不支持 Word（分页要靠排版引擎算）")
             else -> throw PageSourceException("不支持的文件类型 .${extOf(name)}")
         }

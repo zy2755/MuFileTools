@@ -57,7 +57,9 @@ class ExtractPage(
         render = { entryId, page, cb ->
             thumbExecutor.execute {
                 val e = synchronized(entries) { entries.getOrNull(entryId) }
-                val bmp = try { e?.doc?.renderPage(page, 320) } catch (_: Throwable) { null }
+                val bmp = try { e?.doc?.renderPage(page, 320) } catch (t: Throwable) {
+                    android.util.Log.w("ExtractPage", "缩略图渲染失败 page=$page", t); null
+                }
                 activity.runOnUiThread { cb(bmp) }
             }
         },
@@ -163,6 +165,7 @@ class ExtractPage(
                 } catch (e: PageSourceException) {
                     withContext(Dispatchers.Main) { toast("$name：${e.message}") }
                 } catch (e: Throwable) {
+                    android.util.Log.w("ExtractPage", "打开失败：$name", e)
                     withContext(Dispatchers.Main) {
                         toast("无法打开：$name（${e.javaClass.simpleName}）")
                     }
